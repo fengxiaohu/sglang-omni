@@ -161,3 +161,16 @@ source .venv/bin/activate
 
 uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 ```
+
+### Regional PyPI mirrors
+
+Some mirrors are missing `mooncake-transfer-engine-cuda13` or lag behind PyPI
+on it, so a mirror-only install fails to resolve the version floor in
+[`pyproject.toml`](../../pyproject.toml). Fetch that one wheel from PyPI and
+keep the mirror for everything else:
+
+```bash
+pip download --no-deps --index-url https://pypi.org/simple \
+    "mooncake-transfer-engine-cuda13>=0.3.10" -d ./wheels
+uv pip install --prerelease=allow --find-links ./wheels -e .   # or "sglang-omni==<version>" in place of -e .
+```
