@@ -162,5 +162,4 @@ source .venv/bin/activate
 uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 ```
 
-If your configured PyPI mirror is missing a required package version, see
-[Regional PyPI mirrors](./troubleshooting.md#regional-pypi-mirrors) for a workaround.
+For installation problems, see [Troubleshooting](./troubleshooting.md).
