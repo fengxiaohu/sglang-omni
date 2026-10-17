@@ -78,5 +78,5 @@ For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
 
 ## Next steps
 
-- [Run Qwen3-ASR with Torch/MPS](../cookbook/qwen3_asr.md#apple-silicon-torch-mps).
+- [Run Qwen3-ASR with Torch/MPS](../cookbook/qwen3_asr.md#apple-silicon).
 - [Run Fun-ASR with Torch/MPS](../cookbook/fun_asr.md#apple-silicon).
