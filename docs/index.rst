@@ -112,6 +112,7 @@ Supported Models
    get_started/installation_xpu.md
    get_started/installation_cpu.md
    get_started/installation_musa.md
+   get_started/apiserver_quickstart.md
    get_started/troubleshooting.md
 
 
@@ -161,6 +162,7 @@ Supported Models
    basic_usage/process_topology.md
    basic_usage/tts_process_topology.md
    basic_usage/process_topology_migration.md
+   basic_usage/python_router.md
    basic_usage/omni_router.md
    basic_usage/mps_dp.md
    basic_usage/native_media_routes.md
@@ -190,6 +192,8 @@ Supported Models
    developer_reference/full_duplex_bench.md
    developer_reference/full_duplex_metrics.md
    developer_reference/tts_bench.md
+   developer_reference/tts_model_integration.md
+   developer_reference/mlx.md
    developer_reference/asr_bench.md
    developer_reference/omni_offline_bench.md
    developer_reference/rl_admin_control.md
