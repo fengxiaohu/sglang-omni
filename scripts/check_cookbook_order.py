@@ -45,7 +45,7 @@ DEFAULT_TARGET = REPO_ROOT / "docs" / "index.rst"
 ROADMAP_SET = frozenset(ROADMAP_ORDER)
 DOWNLOAD_SET = frozenset(DOWNLOADS_DESC)
 
-_ENTRY_RE = re.compile(r"^   (cookbook/[a-z0-9_.-]+\.md)$")
+EXPLICIT_TITLE_RE = re.compile(r".+<([^<>]+)>")
 
 
 @dataclass(frozen=True)
@@ -74,28 +74,35 @@ def resolve_targets(raw_paths: list[str]) -> list[Path]:
 
 def extract_cookbook_entries(source: str) -> tuple[list[str], dict[str, int]]:
     """Return (entries, lineno_by_entry) for the Cookbook toctree block."""
-    lines = source.splitlines()
     entries: list[str] = []
     lineno_by_entry: dict[str, int] = {}
+    in_toctree = False
     in_cookbook = False
-    for lineno, line in enumerate(lines, start=1):
+    for line_number, line in enumerate(source.splitlines(), start=1):
         if line.startswith(".. toctree::"):
+            in_toctree = True
             in_cookbook = False
-            continue
-        if line.strip() == ":caption: Cookbook":
-            in_cookbook = True
-            continue
-        if not in_cookbook:
-            continue
-        if not line.strip():
-            continue
-        match = _ENTRY_RE.match(line)
-        if match:
-            entry = match.group(1)
+        elif not line.strip():
+            pass
+        elif not line[0].isspace():
+            in_toctree = False
+            in_cookbook = False
+        elif in_toctree and line.lstrip().startswith(":"):
+            if line.strip().startswith(":caption:"):
+                in_cookbook = line.strip() == ":caption: Cookbook"
+            else:
+                pass
+        elif in_cookbook:
+            entry = line.strip()
+            match = EXPLICIT_TITLE_RE.fullmatch(entry)
+            if match:
+                entry = match.group(1).strip()
+            else:
+                pass
             entries.append(entry)
-            lineno_by_entry[entry] = lineno
+            lineno_by_entry[entry] = line_number
         else:
-            break
+            pass
     return entries, lineno_by_entry
 
 
@@ -199,7 +206,7 @@ def check_source(path: Path, source: str) -> list[Violation]:
                     1,
                     "cookbook-order",
                     f"downloads not in descending order at downloads position {index + 1}: "
-                    f"'{first}' ({first_count:,}) must come before '{second}' ({second_count:,})",
+                    f"'{first}' ({first_count:,}) must come after '{second}' ({second_count:,})",
                 )
             )
             break
@@ -255,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     violations: list[Violation] = []
     for path in targets:
         if not path.is_file():
-            print(f"{path}: not a file; skipped", file=sys.stderr)
+            violations.append(Violation(path, 1, 1, "cookbook-order", "not a file"))
         else:
             violations.extend(check_file(path))
     return report_violations(violations)
