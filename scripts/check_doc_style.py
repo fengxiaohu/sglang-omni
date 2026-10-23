@@ -29,6 +29,9 @@ TOCTREE_EXEMPTIONS = {
     "README.md": "Repository documentation overview, separate from the published manual.",
     "design/gpu_radix_hash.md": "Internal design note, not part of the user manual.",
     "design/refactor_rfc.md": "Internal refactoring proposal, not part of the user manual.",
+    "developer_reference/mlx.md": (
+        "Redirect placeholder excluded from the Sphinx build; the published page is mlx/index.md."
+    ),
 }
 
 

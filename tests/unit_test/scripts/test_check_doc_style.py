@@ -250,10 +250,12 @@ def test_check_docs_allows_known_navigation_pages_but_rejects_new_design_pages(
 ) -> None:
     docs_root = tmp_path / "docs"
     (docs_root / "design").mkdir(parents=True)
+    (docs_root / "developer_reference").mkdir()
     for relative_path in (
         "README.md",
         "design/gpu_radix_hash.md",
         "design/refactor_rfc.md",
+        "developer_reference/mlx.md",
         "design/new_page.md",
     ):
         path = docs_root / relative_path
