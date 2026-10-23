@@ -281,6 +281,37 @@ def test_check_docs_allows_known_navigation_pages_but_rejects_new_design_pages(
     } == {"no-emoji", "proper-noun"}
 
 
+def test_check_docs_exempts_sidebar_omissions_but_keeps_style_rules(
+    tmp_path: Path,
+) -> None:
+    docs_root = tmp_path / "docs"
+    (docs_root / "get_started").mkdir(parents=True)
+    (docs_root / "basic_usage").mkdir()
+    relative_paths = (
+        "get_started/apiserver_quickstart.md",
+        "basic_usage/python_router.md",
+    )
+    for relative_path in relative_paths:
+        (docs_root / relative_path).write_text(
+            "# Title\n\nCuda 😀\n\n```\nbody\n```\n",
+            encoding="utf-8",
+        )
+
+    violations = check_docs(docs_root)
+
+    assert [
+        violation.path.relative_to(docs_root).as_posix()
+        for violation in violations
+        if violation.rule == "missing-toctree"
+    ] == []
+    for relative_path in relative_paths:
+        assert {
+            violation.rule
+            for violation in violations
+            if violation.path.relative_to(docs_root).as_posix() == relative_path
+        } == {"no-emoji", "proper-noun", "fence-language"}
+
+
 def test_check_docs_does_not_report_duplicate_blocks_within_one_file(
     tmp_path: Path,
 ) -> None:
