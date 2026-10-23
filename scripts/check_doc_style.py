@@ -32,6 +32,12 @@ TOCTREE_EXEMPTIONS = {
     "developer_reference/mlx.md": (
         "Redirect placeholder excluded from the Sphinx build; the published page is mlx/index.md."
     ),
+    "get_started/apiserver_quickstart.md": (
+        "Linked from installation and API server design; not a sidebar entry."
+    ),
+    "basic_usage/python_router.md": (
+        "Kept until a separate change removes the Python router; not a sidebar entry."
+    ),
 }
 
 
