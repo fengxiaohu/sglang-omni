@@ -122,42 +122,16 @@ Run `pre-commit run --all-files` before submitting a change.
 
 ## Documentation checks
 
-The `doc-style` pre-commit hook checks every Markdown file under `docs/` for
-emoji. It uses an isolated Python environment with pinned lint dependencies;
-the inference package does not need these dependencies.
-
-To run the same check and tests manually from the repository root with Python
-3.11 or 3.12:
+The `doc-style` hook rejects emoji in `docs/**/*.md`, including inline code and URLs,
+while allowing text presentation. Only top-level fences indented by up to three spaces
+are exempt; fences nested in lists or blockquotes are not supported. Unclosed fences
+are reported at their opening line. The checker reports file/line diagnostics without
+modifying files (exit 0: clean, 1: violations).
 
 ```bash
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -r scripts/requirements-doc-lint.txt pytest
+python -m pip install -r scripts/requirements-doc-lint.txt
 python scripts/check_doc_style.py
-python -m pytest tests/unit_test/scripts/test_check_doc_style.py -q
-pre-commit run doc-style --all-files
 ```
 
-Install pre-commit separately with `python -m pip install pre-commit` if needed.
-First installation downloads packages; subsequent checker and test runs work
-offline. The checker reports `path:line: no-emoji: detail` on standard error
-and exits with 1 for violations or 0 when clean. It never rewrites documents.
-
-The checker uses `emoji==2.15.0` (BSD 3-Clause, Python 3.8 or later), whose bundled
-data covers Unicode Emoji 17.0. Two narrowly defined standard-library patterns
-cover forms the library omits: Regional Indicator code points (U+1F1E6–U+1F1FF), and
-ASCII digits, `#`, or `*` immediately followed by VS16 (U+FE0F). Already matched
-flags and keycaps are excluded from the supplement to avoid duplicate reports.
-The boundaries follow the Unicode 17.0 [character properties](https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt)
-and [variation sequences](https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-variation-sequences.txt).
-
-This is library-based matching plus those two supplements, rather than a full
-Unicode emoji grammar parser. Revalidate whether the supplements are still
-necessary when upgrading the library. There are no custom Unicode tables,
-generators, update scripts, or network requests during checking.
-
-The checker rejects default emoji characters and legal
-emoji combinations, including flags, keycaps, skin tones, and ZWJ sequences.
-Plain text symbols and valid VS15 text presentation are allowed; emoji
-presentation using VS16 is rejected. Each complete combination is reported
-once. Fenced code is exempt; inline code and URLs are checked.
+When upgrading `emoji`, recheck the supplements for standalone regional indicators
+and `[0-9#*]` followed by VS16.

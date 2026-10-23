@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Reject emoji outside fenced code in Markdown documentation."""
+"""Reject emoji outside top-level fenced code in Markdown documentation."""
 
 from __future__ import annotations
 
@@ -12,7 +12,9 @@ from pathlib import Path
 import emoji
 
 DOCS_ROOT = Path(__file__).resolve().parents[1] / "docs"
-FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+FENCE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+TEXT_PRESENTATION_SELECTOR = "\ufe0e"
+EMOJI_PRESENTATION_SELECTOR = "\ufe0f"
 # note (fengxiaohu): Unicode 17.0 includes these two forms missing from emoji.
 EMOJI_SUPPLEMENT = re.compile(r"[\U0001f1e6-\U0001f1ff]|[#*0-9]\ufe0f")
 
@@ -29,8 +31,9 @@ def check_source(path: Path, source: str) -> list[Violation]:
     """Check emoji presentation while preserving complete sequence matches."""
     violations: list[Violation] = []
     fence_marker = ""
+    fence_start_line_number = 0
     for line_number, line in enumerate(source.splitlines(), start=1):
-        fence = FENCE.match(line)
+        fence = FENCE_PATTERN.match(line)
         if fence_marker:
             if (
                 fence
@@ -43,28 +46,32 @@ def check_source(path: Path, source: str) -> list[Violation]:
                 pass
         elif fence:
             fence_marker = fence.group(1)
+            fence_start_line_number = line_number
         else:
             emoji_matches = emoji.emoji_list(line)
             sequences: list[str] = []
             for sequence_match in emoji_matches:
                 sequence = sequence_match["emoji"]
                 match_end = sequence_match["match_end"]
-                selector = line[match_end : match_end + 1]
-                properties = emoji.EMOJI_DATA[sequence]
+                variation_selector = line[match_end : match_end + 1]
+                emoji_properties = emoji.EMOJI_DATA[sequence]
                 # note (fengxiaohu): matches include text-default symbols and omit VS15.
                 is_text_style = len(sequence) == 1 and (
-                    properties["status"] == emoji.STATUS["unqualified"]
-                    or (properties.get("variant", False) and selector == "\ufe0e")
+                    emoji_properties["status"] == emoji.STATUS["unqualified"]
+                    or (
+                        emoji_properties.get("variant", False)
+                        and variation_selector == TEXT_PRESENTATION_SELECTOR
+                    )
                 )
                 if is_text_style:
                     pass
                 else:
                     if (
                         len(sequence) == 1
-                        and properties.get("variant", False)
-                        and selector == "\ufe0f"
+                        and emoji_properties.get("variant", False)
+                        and variation_selector == EMOJI_PRESENTATION_SELECTOR
                     ):
-                        sequence += "\ufe0f"
+                        sequence += EMOJI_PRESENTATION_SELECTOR
                     else:
                         pass
                     sequences.append(sequence)
@@ -89,6 +96,17 @@ def check_source(path: Path, source: str) -> list[Violation]:
                         detail=f"remove emoji sequence {sequence!r}",
                     )
                 )
+    if fence_marker:
+        violations.append(
+            Violation(
+                path=path,
+                line_number=fence_start_line_number,
+                rule="unclosed-fence",
+                detail="unclosed code fence",
+            )
+        )
+    else:
+        pass
     return violations
 
 
