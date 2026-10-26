@@ -1,0 +1,233 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Exercise explicit RST navigation coverage for Markdown documentation."""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("emoji")
+
+from scripts.check_doc_style import check_docs
+
+SCRIPT = Path(__file__).resolve().parents[3] / "scripts/check_doc_style.py"
+
+
+def write_document(docs_root: Path, relative_path: str, source: str) -> Path:
+    """Write a document in an isolated documentation tree."""
+    path = docs_root / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    "rst_path, entry, markdown_path",
+    [
+        ("index.rst", "guide.md", "guide.md"),
+        ("index.rst", "guide", "guide.md"),
+        ("index.rst", "Guide title <guide>", "guide.md"),
+        ("navigation/index.rst", "/guide", "guide.md"),
+        ("navigation/index.rst", "/guide.md", "guide.md"),
+        ("navigation/index.rst", "child/guide", "navigation/child/guide.md"),
+        ("navigation/index.rst", "../guide.md", "guide.md"),
+        (
+            "navigation/index.rst",
+            "Guide title <child/guide.md>",
+            "navigation/child/guide.md",
+        ),
+    ],
+)
+def test_check_docs_resolves_explicit_toctree_paths(
+    tmp_path: Path, rst_path: str, entry: str, markdown_path: str
+) -> None:
+    docs_root = tmp_path / "docs"
+    write_document(docs_root, markdown_path, "# Guide\n")
+    write_document(docs_root, rst_path, f".. toctree::\n\n   {entry}\n")
+
+    assert check_docs(docs_root) == []
+
+
+def test_check_docs_stops_at_directive_boundaries_and_ignores_prose(
+    tmp_path: Path,
+) -> None:
+    docs_root = tmp_path / "docs"
+    for relative_path in (
+        "included.md",
+        "second.md",
+        "outside.md",
+        "after_note.md",
+        "nested/child.md",
+        "nested/after_nested.md",
+    ):
+        write_document(docs_root, relative_path, "# Guide\n")
+    write_document(
+        docs_root,
+        "index.rst",
+        """An ordinary reference to outside.md must not include that page.
+
+.. toctree::
+   :maxdepth: 1
+
+   included
+   nested/index.rst
+
+Outside the directive:
+
+   outside
+
+.. note::
+
+   after_note
+
+.. toctree::
+
+   second
+""",
+    )
+    write_document(
+        docs_root,
+        "nested/index.rst",
+        """.. note::
+
+   .. toctree::
+
+      child
+
+   The nested toctree has ended.
+
+      after_nested
+""",
+    )
+
+    violations = check_docs(docs_root)
+
+    assert [
+        (violation.path.relative_to(docs_root).as_posix(), violation.line_number)
+        for violation in violations
+        if violation.rule == "missing-toctree"
+    ] == [("after_note.md", 1), ("nested/after_nested.md", 1), ("outside.md", 1)]
+
+
+def test_check_docs_ignores_options_external_urls_self_and_globs(
+    tmp_path: Path,
+) -> None:
+    docs_root = tmp_path / "docs"
+    for relative_path in (
+        ":caption: option_page.md",
+        "continued_caption.md",
+        "https:/example.test/remote.md",
+        "self.md",
+        "cookbook/guide.md",
+    ):
+        write_document(docs_root, relative_path, "# Guide\n")
+    write_document(
+        docs_root,
+        "index.rst",
+        """.. toctree::
+   :caption: option_page
+      continued_caption
+   :glob:
+
+   Remote page <https://example.test/remote>
+   self
+   cookbook/*
+""",
+    )
+
+    violations = check_docs(docs_root)
+
+    assert {
+        violation.path.relative_to(docs_root).as_posix()
+        for violation in violations
+        if violation.rule == "missing-toctree"
+    } == {
+        ":caption: option_page.md",
+        "continued_caption.md",
+        "https:/example.test/remote.md",
+        "self.md",
+        "cookbook/guide.md",
+    }
+
+
+def test_check_docs_reports_new_orphans_until_explicitly_included(
+    tmp_path: Path,
+) -> None:
+    docs_root = tmp_path / "docs"
+    path = write_document(docs_root, "design/new_page.md", "# New page\n")
+
+    violations = check_docs(docs_root)
+
+    assert [
+        (violation.path, violation.line_number, violation.rule, violation.detail)
+        for violation in violations
+    ] == [
+        (path, 1, "missing-toctree", "add this page to an explicit RST toctree entry")
+    ]
+    write_document(docs_root, "index.rst", ".. toctree::\n\n   design/new_page\n")
+    assert check_docs(docs_root) == []
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "README.md",
+        "design/gpu_radix_hash.md",
+        "design/refactor_rfc.md",
+        "developer_reference/mlx.md",
+        "get_started/apiserver_quickstart.md",
+        "basic_usage/python_router.md",
+    ],
+)
+def test_navigation_exemptions_keep_emoji_and_fence_checks(
+    tmp_path: Path, relative_path: str
+) -> None:
+    docs_root = tmp_path / "docs"
+    write_document(docs_root, relative_path, "# Notes\n\n😀\n\n```\nbody\n```\n")
+
+    violations = check_docs(docs_root)
+
+    assert [(violation.rule, violation.line_number) for violation in violations] == [
+        ("no-emoji", 3),
+        ("fence-language", 5),
+    ]
+
+
+def test_navigation_exemptions_do_not_apply_to_whole_directories(
+    tmp_path: Path,
+) -> None:
+    docs_root = tmp_path / "docs"
+    write_document(docs_root, "design/Bad-Note.md", "# Note\n")
+
+    violations = check_docs(docs_root)
+
+    assert [(violation.rule, violation.line_number) for violation in violations] == [
+        ("filename-conventions", 1),
+        ("missing-toctree", 1),
+    ]
+
+
+def test_cli_reports_missing_toctree_with_path_and_line_one(tmp_path: Path) -> None:
+    script_path = tmp_path / "scripts" / "check_doc_style.py"
+    script_path.parent.mkdir()
+    shutil.copy2(SCRIPT, script_path)
+    write_document(tmp_path / "docs", "orphan.md", "# Orphan\n")
+
+    result = subprocess.run(
+        [sys.executable, str(script_path)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "docs/orphan.md:1: missing-toctree: "
+        "add this page to an explicit RST toctree entry\n"
+    )

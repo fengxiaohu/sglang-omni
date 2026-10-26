@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Check Markdown documentation filenames, emoji, and code fence labels."""
+"""Check Markdown documentation navigation, filenames, emoji, and fence labels."""
 
 from __future__ import annotations
 
@@ -13,6 +13,15 @@ import emoji
 
 DOCS_ROOT = Path(__file__).resolve().parents[1] / "docs"
 FENCE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+EXTERNAL_TARGET_PATTERN = re.compile(r"(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//|www\.)")
+TOCTREE_EXEMPTIONS = {
+    "README.md": "Repository overview, separate from the published manual.",
+    "design/gpu_radix_hash.md": "Internal design note, outside the user manual.",
+    "design/refactor_rfc.md": "Internal refactoring proposal, outside the user manual.",
+    "developer_reference/mlx.md": "Excluded redirect; the published page is mlx/index.md.",
+    "get_started/apiserver_quickstart.md": "Linked from other pages, outside the sidebar.",
+    "basic_usage/python_router.md": "Retained until the Python router is removed separately.",
+}
 TEXT_PRESENTATION_SELECTOR = "\ufe0e"
 EMOJI_PRESENTATION_SELECTOR = "\ufe0f"
 # note (fengxiaohu): Unicode 17.0 includes these two forms missing from emoji.
@@ -121,9 +130,52 @@ def check_source(path: Path, source: str) -> list[Violation]:
     return violations
 
 
+def toctree_targets(docs_root: Path) -> set[Path]:
+    """Resolve explicit toctree entries relative to each containing RST file."""
+    targets: set[Path] = set()
+    for rst_path in sorted(docs_root.rglob("*.rst")):
+        directive_indentation: int | None = None
+        option_indentation: int | None = None
+        for line in rst_path.read_text(encoding="utf-8").splitlines():
+            expanded_line = line.expandtabs()
+            stripped = expanded_line.strip()
+            indentation = len(expanded_line) - len(expanded_line.lstrip())
+            if stripped == ".. toctree::":
+                directive_indentation = indentation
+                option_indentation = None
+            elif directive_indentation is None or not stripped:
+                pass
+            elif indentation <= directive_indentation:
+                directive_indentation = None
+                option_indentation = None
+            elif stripped.startswith(":"):
+                option_indentation = indentation
+            elif option_indentation is not None and indentation > option_indentation:
+                pass
+            else:
+                option_indentation = None
+                titled_target = re.fullmatch(r".+\s+<([^<>]+)>", stripped)
+                target = titled_target.group(1) if titled_target else stripped
+                if target == "self" or EXTERNAL_TARGET_PATTERN.match(target):
+                    pass
+                else:
+                    target_path = (
+                        docs_root / target.lstrip("/")
+                        if target.startswith("/")
+                        else rst_path.parent / target
+                    )
+                    if not target_path.suffix:
+                        target_path = target_path.with_suffix(".md")
+                    else:
+                        pass
+                    targets.add(target_path.resolve())
+    return targets
+
+
 def check_docs(docs_root: Path = DOCS_ROOT) -> list[Violation]:
     """Scan all Markdown documentation without rewriting files."""
     violations: list[Violation] = []
+    published_paths = toctree_targets(docs_root)
     for path in sorted(docs_root.rglob("*.md")):
         if path != docs_root / "README.md" and not re.fullmatch(
             r"[a-z0-9_]+\.md", path.name
@@ -134,6 +186,20 @@ def check_docs(docs_root: Path = DOCS_ROOT) -> list[Violation]:
                     line_number=1,
                     rule="filename-conventions",
                     detail=r"Markdown basename must match [a-z0-9_]+\.md",
+                )
+            )
+        else:
+            pass
+        if (
+            path.relative_to(docs_root).as_posix() not in TOCTREE_EXEMPTIONS
+            and path.resolve() not in published_paths
+        ):
+            violations.append(
+                Violation(
+                    path=path,
+                    line_number=1,
+                    rule="missing-toctree",
+                    detail="add this page to an explicit RST toctree entry",
                 )
             )
         else:
