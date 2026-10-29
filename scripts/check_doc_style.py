@@ -14,6 +14,8 @@ import emoji
 DOCS_ROOT = Path(__file__).resolve().parents[1] / "docs"
 FENCE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 EXTERNAL_TARGET_PATTERN = re.compile(r"(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//|www\.)")
+RST_DIRECTIVE_PATTERN = re.compile(r"\.\.\s+([\w-]+)::(?:\s+(.*))?$")
+LITERAL_DIRECTIVE_NAMES = {"code", "code-block", "sourcecode", "parsed-literal", "raw"}
 TOCTREE_EXEMPTIONS = {
     "README.md": "Repository overview, separate from the published manual.",
     "design/gpu_radix_hash.md": "Internal design note, outside the user manual.",
@@ -136,25 +138,48 @@ def toctree_targets(docs_root: Path) -> set[Path]:
     for rst_path in sorted(docs_root.rglob("*.rst")):
         directive_indentation: int | None = None
         option_indentation: int | None = None
+        inactive_indentation: int | None = None
         for line in rst_path.read_text(encoding="utf-8").splitlines():
             expanded_line = line.expandtabs()
             stripped = expanded_line.strip()
             indentation = len(expanded_line) - len(expanded_line.lstrip())
-            if stripped == ".. toctree::":
-                directive_indentation = indentation
-                option_indentation = None
-            elif directive_indentation is None or not stripped:
+            if not stripped:
+                continue
+            else:
                 pass
-            elif indentation <= directive_indentation:
+            if inactive_indentation is not None and indentation > inactive_indentation:
+                continue
+            else:
+                inactive_indentation = None
+            if directive_indentation is None or indentation <= directive_indentation:
                 directive_indentation = None
                 option_indentation = None
+                rst_directive = RST_DIRECTIVE_PATTERN.fullmatch(stripped)
+                directive_name = rst_directive.group(1).lower() if rst_directive else ""
+                if (
+                    rst_directive
+                    and directive_name == "toctree"
+                    and not rst_directive.group(2)
+                ):
+                    directive_indentation = indentation
+                elif directive_name in LITERAL_DIRECTIVE_NAMES or (
+                    not rst_directive
+                    and (
+                        stripped == ".."
+                        or stripped.startswith(".. ")
+                        or stripped.endswith("::")
+                    )
+                ):
+                    inactive_indentation = indentation
+                else:
+                    pass
             elif stripped.startswith(":"):
                 option_indentation = indentation
             elif option_indentation is not None and indentation > option_indentation:
                 pass
             else:
                 option_indentation = None
-                titled_target = re.fullmatch(r".+\s+<([^<>]+)>", stripped)
+                titled_target = re.fullmatch(r".+?\s*<([^<>]+)>", stripped)
                 target = titled_target.group(1) if titled_target else stripped
                 if target == "self" or EXTERNAL_TARGET_PATTERN.match(target):
                     pass

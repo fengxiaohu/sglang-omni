@@ -31,6 +31,9 @@ def write_document(docs_root: Path, relative_path: str, source: str) -> Path:
         ("index.rst", "guide.md", "guide.md"),
         ("index.rst", "guide", "guide.md"),
         ("index.rst", "Guide title <guide>", "guide.md"),
+        ("index.rst", "Guide<guide>", "guide.md"),
+        ("index.rst", "Guide<guide.md>", "guide.md"),
+        ("navigation/index.rst", "Guide</guide>", "guide.md"),
         ("navigation/index.rst", "/guide", "guide.md"),
         ("navigation/index.rst", "/guide.md", "guide.md"),
         ("navigation/index.rst", "child/guide", "navigation/child/guide.md"),
@@ -50,6 +53,40 @@ def test_check_docs_resolves_explicit_toctree_paths(
     write_document(docs_root, rst_path, f".. toctree::\n\n   {entry}\n")
 
     assert check_docs(docs_root) == []
+
+
+@pytest.mark.parametrize(
+    "inactive_source",
+    [
+        "::\n\n   .. toctree::\n\n      orphan\n",
+        "Example::\n\n   .. toctree::\n\n      orphan\n",
+        "..\n   .. toctree::\n\n      orphan\n",
+        ".. A navigation example\n\n   .. toctree::\n\n      orphan\n",
+        ".. code-block:: rst\n\n   .. toctree::\n\n      orphan\n",
+        ".. code:: rst\n\n   .. toctree::\n\n      orphan\n",
+        ".. sourcecode:: rst\n\n   .. toctree::\n\n      orphan\n",
+        ".. parsed-literal::\n\n   .. toctree::\n\n      orphan\n",
+        ".. raw:: html\n\n   .. toctree::\n\n      orphan\n",
+        (".. note::\n\n   Example::\n\n" "      .. toctree::\n\n         orphan\n"),
+    ],
+)
+def test_check_docs_ignores_inactive_toctrees(
+    tmp_path: Path, inactive_source: str
+) -> None:
+    docs_root = tmp_path / "docs"
+    orphan_path = write_document(docs_root, "orphan.md", "# Orphan\n")
+    write_document(docs_root, "included.md", "# Included\n")
+    write_document(
+        docs_root,
+        "index.rst",
+        f"{inactive_source}\n.. toctree::\n\n   included\n",
+    )
+
+    violations = check_docs(docs_root)
+
+    assert [(violation.path, violation.rule) for violation in violations] == [
+        (orphan_path, "missing-toctree")
+    ]
 
 
 def test_check_docs_stops_at_directive_boundaries_and_ignores_prose(
