@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise explicit RST navigation coverage for Markdown documentation."""
+"""Exercise RST navigation coverage for Markdown documentation."""
 
 from __future__ import annotations
 
@@ -150,7 +150,7 @@ Outside the directive:
     ] == [("after_note.md", 1), ("nested/after_nested.md", 1), ("outside.md", 1)]
 
 
-def test_check_docs_ignores_options_external_urls_self_and_globs(
+def test_check_docs_ignores_options_external_urls_and_self(
     tmp_path: Path,
 ) -> None:
     docs_root = tmp_path / "docs"
@@ -187,8 +187,89 @@ def test_check_docs_ignores_options_external_urls_self_and_globs(
         "continued_caption.md",
         "https:/example.test/remote.md",
         "self.md",
-        "cookbook/guide.md",
     }
+
+
+@pytest.mark.parametrize(
+    "rst_path, entry, included_pages",
+    [
+        ("index.rst", "cookbook/*", {"guide", "guide_two", "guide1"}),
+        ("navigation/index.rst", "../cookbook/*", {"guide", "guide_two", "guide1"}),
+        ("navigation/index.rst", "/cookbook/*", {"guide", "guide_two", "guide1"}),
+        (
+            "index.rst",
+            "cookbook/**",
+            {"guide", "guide_two", "guide1", "nested/guide", "nested/deeper/guide"},
+        ),
+        ("index.rst", "cookbook/*/guide", {"nested/guide"}),
+        ("index.rst", "cookbook/**/guide", {"nested/guide", "nested/deeper/guide"}),
+        ("index.rst", "cookbook/guide?", {"guide1"}),
+        ("index.rst", "cookbook/guide[0-9]", {"guide1"}),
+        ("index.rst", "cookbook/guide[!a-z]", {"guide1"}),
+        ("index.rst", "cookbook[!x]*", set()),
+        ("index.rst", "cookbook[/]*", {"guide", "guide_two", "guide1"}),
+        ("index.rst", "cookbook?guide", set()),
+        ("index.rst", "cookbook/*.md", set()),
+        ("index.rst", "absent/*", set()),
+        ("index.rst", "cookbook/guide", {"guide"}),
+        ("index.rst", "Guide <cookbook/guide.md>", {"guide"}),
+        ("index.rst", "Guides <cookbook/*>", set()),
+    ],
+)
+def test_toctree_glob_includes_matching_markdown(
+    tmp_path: Path, rst_path: str, entry: str, included_pages: set[str]
+) -> None:
+    docs_root = tmp_path / "docs[2026]"
+    cookbook_pages = {
+        "guide",
+        "guide_two",
+        "guide1",
+        "nested/guide",
+        "nested/deeper/guide",
+    }
+    for page in cookbook_pages:
+        write_document(docs_root, f"cookbook/{page}.md", "# Guide\n")
+    write_document(docs_root, "outside.md", "# Outside\n")
+    write_document(
+        docs_root,
+        rst_path,
+        f".. toctree::\n   :glob:\n   :maxdepth: 2\n\n   {entry}\n",
+    )
+
+    violations = check_docs(docs_root)
+
+    assert {
+        violation.path.relative_to(docs_root).as_posix()
+        for violation in violations
+        if violation.rule == "missing-toctree"
+    } == {"outside.md"} | {
+        f"cookbook/{page}.md" for page in cookbook_pages - included_pages
+    }
+
+
+@pytest.mark.parametrize(
+    "rst_source",
+    [
+        ".. toctree::\n\n   cookbook/*\n",
+        ".. toctree::\n   :glob:\n\n   included\n\n" ".. toctree::\n\n   cookbook/*\n",
+        ".. toctree::\n   :caption: Examples\n      :glob:\n\n   cookbook/*\n",
+        ".. code-block:: rst\n\n   .. toctree::\n      :glob:\n\n      cookbook/*\n",
+    ],
+)
+def test_check_docs_limits_glob_to_its_active_directive(
+    tmp_path: Path, rst_source: str
+) -> None:
+    docs_root = tmp_path / "docs"
+    write_document(docs_root, "cookbook/guide.md", "# Guide\n")
+    write_document(docs_root, "included.md", "# Included\n")
+    write_document(docs_root, "navigation.rst", rst_source)
+    write_document(docs_root, "index.rst", ".. toctree::\n\n   included\n")
+
+    assert [
+        violation.path.relative_to(docs_root).as_posix()
+        for violation in check_docs(docs_root)
+        if violation.rule == "missing-toctree"
+    ] == ["cookbook/guide.md"]
 
 
 def test_check_docs_reports_new_orphans_until_explicitly_included(

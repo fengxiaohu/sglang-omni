@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
+import posixpath
 import re
 import sys
 from dataclasses import dataclass
@@ -15,6 +17,7 @@ DOCS_ROOT = Path(__file__).resolve().parents[1] / "docs"
 FENCE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 EXTERNAL_TARGET_PATTERN = re.compile(r"(?:[a-zA-Z][a-zA-Z0-9+.-]*:|//|www\.)")
 RST_DIRECTIVE_PATTERN = re.compile(r"\.\.\s+([\w-]+)::(?:\s+(.*))?$")
+GLOB_TOKEN_PATTERN = re.compile(r"\[[!]?\]?[^]]*\]|\*\*|\*|\?|.")
 LITERAL_DIRECTIVE_NAMES = {"code", "code-block", "sourcecode", "parsed-literal", "raw"}
 TOCTREE_EXEMPTIONS = {
     "README.md": "Repository overview, separate from the published manual.",
@@ -132,13 +135,39 @@ def check_source(path: Path, source: str) -> list[Violation]:
     return violations
 
 
+def toctree_glob_pattern(target: str) -> re.Pattern[str]:
+    """Match document names with single wildcards confined to one directory."""
+    pattern_parts: list[str] = []
+    for pattern_token in GLOB_TOKEN_PATTERN.findall(target):
+        if pattern_token == "**":
+            pattern_parts.append(".*")
+        elif pattern_token == "*":
+            pattern_parts.append("[^/]*")
+        elif pattern_token == "?":
+            pattern_parts.append("[^/]")
+        elif pattern_token.startswith("[") and len(pattern_token) > 1:
+            character_pattern = fnmatch.translate(pattern_token)
+            pattern_parts.append(
+                ("(?!/)" if pattern_token.startswith("[!") else "")
+                + character_pattern.removesuffix(r"\Z").removesuffix(r"\z")
+            )
+        else:
+            pattern_parts.append(re.escape(pattern_token))
+    return re.compile("".join(pattern_parts))
+
+
 def toctree_targets(docs_root: Path) -> set[Path]:
-    """Resolve explicit toctree entries relative to each containing RST file."""
+    """Resolve explicit and glob toctree entries relative to their RST file."""
     targets: set[Path] = set()
+    markdown_documents = {
+        path.relative_to(docs_root).with_suffix("").as_posix(): path.resolve()
+        for path in docs_root.rglob("*.md")
+    }
     for rst_path in sorted(docs_root.rglob("*.rst")):
         directive_indentation: int | None = None
         option_indentation: int | None = None
         inactive_indentation: int | None = None
+        has_glob = False
         for line in rst_path.read_text(encoding="utf-8").splitlines():
             expanded_line = line.expandtabs()
             stripped = expanded_line.strip()
@@ -154,6 +183,7 @@ def toctree_targets(docs_root: Path) -> set[Path]:
             if directive_indentation is None or indentation <= directive_indentation:
                 directive_indentation = None
                 option_indentation = None
+                has_glob = False
                 rst_directive = RST_DIRECTIVE_PATTERN.fullmatch(stripped)
                 directive_name = rst_directive.group(1).lower() if rst_directive else ""
                 if (
@@ -173,10 +203,14 @@ def toctree_targets(docs_root: Path) -> set[Path]:
                     inactive_indentation = indentation
                 else:
                     pass
-            elif stripped.startswith(":"):
-                option_indentation = indentation
             elif option_indentation is not None and indentation > option_indentation:
                 pass
+            elif stripped.startswith(":"):
+                option_indentation = indentation
+                if stripped == ":glob:":
+                    has_glob = True
+                else:
+                    pass
             else:
                 option_indentation = None
                 titled_target = re.fullmatch(r".+?\s*<([^<>]+)>", stripped)
@@ -189,11 +223,23 @@ def toctree_targets(docs_root: Path) -> set[Path]:
                         if target.startswith("/")
                         else rst_path.parent / target
                     )
-                    if not target_path.suffix:
-                        target_path = target_path.with_suffix(".md")
+                    if has_glob and not titled_target and re.search(r"[*?\[]", target):
+                        glob_pattern = toctree_glob_pattern(
+                            posixpath.normpath(
+                                target_path.relative_to(docs_root).as_posix()
+                            )
+                        )
+                        targets.update(
+                            path
+                            for document_name, path in markdown_documents.items()
+                            if glob_pattern.fullmatch(document_name)
+                        )
                     else:
-                        pass
-                    targets.add(target_path.resolve())
+                        if not target_path.suffix:
+                            target_path = target_path.with_suffix(".md")
+                        else:
+                            pass
+                        targets.add(target_path.resolve())
     return targets
 
 
