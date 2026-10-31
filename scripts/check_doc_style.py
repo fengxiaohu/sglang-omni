@@ -156,19 +156,71 @@ def toctree_glob_pattern(target: str) -> re.Pattern[str]:
     return re.compile("".join(pattern_parts))
 
 
+def markdown_toctree_source(source: str) -> str:
+    """Expose fenced MyST toctrees to the RST navigation parser."""
+    navigation_lines: list[str] = []
+    fence_marker = ""
+    is_toctree = False
+    is_yaml_options = False
+    is_comment = False
+    for line in source.splitlines():
+        fence = FENCE_PATTERN.match(line)
+        stripped = line.strip()
+        if fence_marker:
+            if (
+                fence
+                and fence.group(1)[0] == fence_marker[0]
+                and len(fence.group(1)) >= len(fence_marker)
+                and not fence.group(2).strip()
+            ):
+                fence_marker = ""
+            elif not is_toctree:
+                pass
+            elif stripped == "---":
+                is_yaml_options = not is_yaml_options
+            elif is_yaml_options:
+                if re.fullmatch(r"glob:\s*(?:true|yes|on)?", stripped, re.IGNORECASE):
+                    navigation_lines.append("   :glob:")
+                else:
+                    pass
+            else:
+                navigation_lines.append(f"   {line}")
+        elif is_comment:
+            is_comment = "-->" not in line
+        elif stripped.startswith("<!--"):
+            is_comment = "-->" not in line
+        elif fence:
+            fence_marker = fence.group(1)
+            is_toctree = fence.group(2).strip() == "{toctree}"
+            is_yaml_options = False
+            if is_toctree:
+                navigation_lines.append(".. toctree::")
+            else:
+                pass
+        else:
+            pass
+    return "\n".join(navigation_lines)
+
+
 def toctree_targets(docs_root: Path) -> set[Path]:
-    """Resolve explicit and glob toctree entries relative to their RST file."""
+    """Resolve explicit and glob entries in RST and Markdown toctrees."""
     targets: set[Path] = set()
+    markdown_paths = sorted(docs_root.rglob("*.md"))
     markdown_documents = {
         path.relative_to(docs_root).with_suffix("").as_posix(): path.resolve()
-        for path in docs_root.rglob("*.md")
+        for path in markdown_paths
     }
-    for rst_path in sorted(docs_root.rglob("*.rst")):
+    for navigation_path in sorted([*docs_root.rglob("*.rst"), *markdown_paths]):
         directive_indentation: int | None = None
         option_indentation: int | None = None
         inactive_indentation: int | None = None
         has_glob = False
-        for line in rst_path.read_text(encoding="utf-8").splitlines():
+        source = navigation_path.read_text(encoding="utf-8")
+        if navigation_path.suffix == ".md":
+            source = markdown_toctree_source(source)
+        else:
+            pass
+        for line in source.splitlines():
             expanded_line = line.expandtabs()
             stripped = expanded_line.strip()
             indentation = len(expanded_line) - len(expanded_line.lstrip())
@@ -221,7 +273,7 @@ def toctree_targets(docs_root: Path) -> set[Path]:
                     target_path = (
                         docs_root / target.lstrip("/")
                         if target.startswith("/")
-                        else rst_path.parent / target
+                        else navigation_path.parent / target
                     )
                     if has_glob and not titled_target and re.search(r"[*?\[]", target):
                         glob_pattern = toctree_glob_pattern(
@@ -233,6 +285,7 @@ def toctree_targets(docs_root: Path) -> set[Path]:
                             path
                             for document_name, path in markdown_documents.items()
                             if glob_pattern.fullmatch(document_name)
+                            and path != navigation_path.resolve()
                         )
                     else:
                         if not target_path.suffix:

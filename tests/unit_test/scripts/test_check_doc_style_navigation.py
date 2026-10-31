@@ -272,6 +272,53 @@ def test_check_docs_limits_glob_to_its_active_directive(
     ] == ["cookbook/guide.md"]
 
 
+@pytest.mark.parametrize(
+    "navigation_source, is_included",
+    [
+        ("```{toctree}\n---\nmaxdepth: 1\n---\n\n../guide.md\n```", True),
+        ("```{toctree}\n:maxdepth: 1\n\n../guide\n```", True),
+        ("~~~{toctree}\n\nGuide <../guide.md>\n~~~", True),
+        ("```{toctree}\n---\nglob: true\n---\n\n../*\n```", True),
+        ("```{toctree}\n:glob:\n\n../*\n```", True),
+        ("```{toctree}\n---\nglob: false\n---\n\n../*\n```", False),
+        ("````rst\n```{toctree}\n\n../guide\n```\n````", False),
+        ("<!--\n```{toctree}\n\n../guide\n```\n-->", False),
+        ("```{toctree}\n---\ncaption: ../guide.md\n---\n```", False),
+        ("See ../guide.md for an example.", False),
+    ],
+)
+def test_check_docs_recognizes_active_markdown_toctrees(
+    tmp_path: Path, navigation_source: str, is_included: bool
+) -> None:
+    docs_root = tmp_path / "docs"
+    guide_path = write_document(docs_root, "cookbook/guide.md", "# Guide\n")
+    write_document(
+        docs_root, "cookbook/companies/qwen.md", f"# Qwen\n\n{navigation_source}\n"
+    )
+    write_document(
+        docs_root, "index.rst", ".. toctree::\n\n   cookbook/companies/qwen\n"
+    )
+
+    assert [
+        violation.path
+        for violation in check_docs(docs_root)
+        if violation.rule == "missing-toctree"
+    ] == ([] if is_included else [guide_path])
+
+
+def test_markdown_toctree_glob_does_not_include_its_own_document(
+    tmp_path: Path,
+) -> None:
+    docs_root = tmp_path / "docs"
+    guide_path = write_document(
+        docs_root, "guide.md", "# Guide\n\n```{toctree}\n:glob:\n\n*\n```\n"
+    )
+
+    assert [
+        (violation.path, violation.rule) for violation in check_docs(docs_root)
+    ] == [(guide_path, "missing-toctree")]
+
+
 def test_check_docs_reports_new_orphans_until_explicitly_included(
     tmp_path: Path,
 ) -> None:
