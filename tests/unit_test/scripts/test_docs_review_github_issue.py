@@ -199,6 +199,8 @@ def test_issue_reply_updates_after_correction_and_deduplicates(
     github_issue_review.review_issue()
     first = str(harness.comments[0]["body"])
     assert "Reproduction" in first and "Environment" in first
+    assert "Otherwise the issue will be closed" not in first
+    assert "ISSUE_TEMPLATE/1-bug-report.yaml" in first
     assert "@everyone" not in first
     github_issue_review.review_issue()
     assert harness.model_call_count == 1

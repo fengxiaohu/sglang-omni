@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -152,7 +153,12 @@ def validate_judgement(
         return judgement
 
 
-def render_comment(form: IssueForm, judgement: IssueJudgement) -> str:
+def render_comment(
+    form: IssueForm,
+    judgement: IssueJudgement,
+    repository_name: str,
+    revision_sha: str,
+) -> str:
     fields = {
         field.attributes.label: field.attributes.description
         for field in required_fields(form)
@@ -164,14 +170,30 @@ def render_comment(form: IssueForm, judgement: IssueJudgement) -> str:
             "Maintainers may still request clarification."
         )
     else:
+        assert judgement.category != "other"
+        template_filename = {
+            "bug": "1-bug-report.yaml",
+            "feature": "2-feature-request.yaml",
+        }[judgement.category]
+        template_url = (
+            f"https://github.com/{repository_name}/blob/{revision_sha}/"
+            f".github/ISSUE_TEMPLATE/{template_filename}"
+        )
         lines = [
             COMMENT_MARKER,
             "Thanks for opening this issue. The automated review could not clearly "
-            "identify the following information requested by the issue template:",
+            f"identify the following information requested by the [issue template]({template_url}):",
             "",
         ]
         for label in judgement.unclear_fields:
-            description = safe_text(fields[label])
+            description = safe_text(
+                re.sub(
+                    r"\s*Otherwise the issue will be closed\.?",
+                    "",
+                    fields[label],
+                    flags=re.IGNORECASE,
+                )
+            )
             lines.append(f"- **{safe_text(label)}**: {description}")
         if judgement.needs_english:
             lines.append("- Please use English, as requested by the issue template.")

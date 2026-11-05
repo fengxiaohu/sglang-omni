@@ -281,7 +281,9 @@ def review_issue() -> None:
         return
     else:
         form = forms[judgement.category][0]
-        body = render_comment(form, judgement)
+        body = render_comment(
+            form, judgement, repository_name, os.environ["GITHUB_SHA"]
+        )
     if existing is None:
         posted = IssueComment.model_validate_json(
             github_api(
