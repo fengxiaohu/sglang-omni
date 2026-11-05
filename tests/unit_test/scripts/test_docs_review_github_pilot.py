@@ -21,6 +21,29 @@ from scripts.docs_review.models import BudgetConfig, Report
 from scripts.docs_review.transport import OpenAICompatibleReviewer, ReviewerError
 
 
+def test_pull_request_uses_current_base_branch_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def api(endpoint: str) -> str:
+        if endpoint.endswith("/pulls/1"):
+            return json.dumps(
+                {
+                    "state": "open",
+                    "body": "",
+                    "base": {"sha": "a" * 40, "ref": "release/example"},
+                    "head": {"sha": "b" * 40},
+                }
+            )
+        else:
+            assert endpoint.endswith("/commits/release%2Fexample")
+            return json.dumps({"sha": "c" * 40})
+
+    monkeypatch.setattr(github_pilot, "github_api", api)
+    pull_request = github_pilot.fetch_pull_request("owner/repo", 1)
+    assert pull_request.base.sha == "c" * 40
+    assert pull_request.head.sha == "b" * 40
+
+
 def test_reservations_bound_duplicates_followups_and_daily_spend() -> None:
     budget = BudgetConfig(
         max_cost_cents_per_call=25,

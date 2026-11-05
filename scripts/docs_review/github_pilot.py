@@ -13,6 +13,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 from cryptography.fernet import Fernet
 from pydantic import BaseModel, Field, ValidationError
@@ -34,6 +35,7 @@ class PilotError(Exception):
 
 class Revision(BaseModel):
     sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    ref: str = ""
 
 
 class PullRequest(BaseModel):
@@ -83,7 +85,16 @@ def github_api(endpoint: str, body: str | None = None, method: str = "PUT") -> s
 
 def fetch_pull_request(repository_name: str, pull_request_number: int) -> PullRequest:
     response = github_api(f"repos/{repository_name}/pulls/{pull_request_number}")
-    return PullRequest.model_validate_json(response)
+    pull_request = PullRequest.model_validate_json(response)
+    if not pull_request.base.ref:
+        raise PilotError("The pull request base branch is unavailable")
+    else:
+        base_ref = quote(pull_request.base.ref, safe="")
+        base_response = github_api(f"repos/{repository_name}/commits/{base_ref}")
+        base_sha = Revision.model_validate_json(base_response).sha
+        return pull_request.model_copy(
+            update={"base": pull_request.base.model_copy(update={"sha": base_sha})}
+        )
 
 
 def load_reservations(repository_name: str) -> tuple[Reservations, str]:
