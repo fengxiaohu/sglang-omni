@@ -36,6 +36,10 @@ gh workflow run docs-review-pilot.yml --repo OWNER/REPO --ref main \
   -f include_pr_body=false
 ```
 
+After checking the collection-only result, set `offline=false` to authorize one
+model call. Set `follow_up=true` only when authorizing a second review or retry.
+For an unbiased test, omit a PR description that already gives away the answer.
+
 After downloading the run's artifact, decrypt it locally with the saved report key
 in the `DOCS_REVIEW_REPORT_KEY` environment variable:
 
