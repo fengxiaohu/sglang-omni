@@ -78,7 +78,11 @@ def github_api(endpoint: str, body: str | None = None, method: str = "PUT") -> s
         arguments, input=input_text, capture_output=True, text=True, check=False
     )
     if completed.returncode:
-        raise PilotError("GitHub API request failed; check repository permissions")
+        status = re.search(r"HTTP (\d{3})", completed.stderr)
+        if status is None:
+            raise PilotError("GitHub API request failed; check repository permissions")
+        else:
+            raise PilotError(f"GitHub API request failed (HTTP {status.group(1)})")
     else:
         return completed.stdout
 

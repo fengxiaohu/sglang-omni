@@ -49,7 +49,7 @@ def format_finding(repository_name: str, head_sha: str, finding: Finding) -> str
     repository_url = f"https://github.com/{repository_name}/blob/{head_sha}"
     return "\n".join(
         [
-            f"- **{safe_text(finding.rule_id)}**: {safe_text(finding.claim)}",
+            f"- **{safe_text(finding.rule_id)}** — claim under review: {safe_text(finding.claim)}",
             f"  - Document: [{safe_text(finding.file_path)}:{finding.line_start}]({repository_url}/{document_path}#L{finding.line_start})",
             f"  - Evidence: [{safe_text(finding.evidence_file_path)}:{finding.evidence_line_start}]({repository_url}/{evidence_path}#L{finding.evidence_line_start}) — {safe_text(finding.evidence_quote)}",
             f"  - Impact: {safe_text(finding.impact)}",

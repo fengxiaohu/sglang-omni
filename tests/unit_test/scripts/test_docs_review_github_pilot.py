@@ -286,6 +286,7 @@ def test_selected_findings_are_published_and_marked_stale_if_head_changes(
     github_publish.publish_selected_findings()
     assert [method for method, body in posted] == ["POST", "PATCH"]
     assert "@someone" not in posted[0][1]
+    assert "claim under review:" in posted[0][1]
     assert head in posted[0][1]
     assert posted[1][1].startswith("**Stale:**")
 
