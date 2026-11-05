@@ -1,0 +1,51 @@
+name: Advisory Issue Review
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Issue number to review
+        required: true
+        type: string
+      retry_failed:
+        description: Authorize one retry of an incomplete review
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: advisory-docs-review-ledger
+  queue: max
+
+jobs:
+  review:
+    if: >-
+      (github.event_name == 'issues' && !github.event.issue.pull_request) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install reviewer dependencies
+        run: python -m pip install 'pydantic==2.12.5' 'cryptography==44.0.0' 'PyYAML==6.0.2'
+      - name: Review the issue against its form
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number || github.event.issue.number }}
+          RETRY_FAILED: ${{ github.event_name == 'workflow_dispatch' && inputs.retry_failed || false }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DOCS_REVIEW_MODEL: ${{ vars.DOCS_REVIEW_MODEL }}
+          DOCS_REVIEW_BUDGET: ${{ vars.DOCS_REVIEW_BUDGET }}
+          DOCS_REVIEW_API_KEY: ${{ secrets.TEST1 }}
+        run: python -m scripts.docs_review.github_issue_review

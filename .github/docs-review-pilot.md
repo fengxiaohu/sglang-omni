@@ -63,3 +63,26 @@ gh workflow run docs-review-publish.yml --repo OWNER/REPO --ref main \
 The publishing workflow refuses an incomplete report or a changed base or head.
 It labels the comment with the reviewed commit and attempts to mark it stale if
 the pull request changes during publication. Findings remain advisory.
+
+## Automatic issue review
+
+The issue workflow runs on opened, edited, reopened, labeled, and unlabeled issues.
+It identifies bug reports and feature requests from their template title, labels,
+form headings, or the model's classification. Unclear issue types are left to
+maintainers. The model reviews
+the issue against required fields and the English request in the corresponding
+form. It does not enforce optional fields, close issues, or execute issue content.
+Issue titles and bodies are sent to the configured model provider.
+
+The bot posts only suggestions tied to the form. It updates its existing comment
+after an edit, and marks prior suggestions as potentially stale if a later review
+cannot complete. Duplicate inputs reuse a recorded result. At most two model calls
+are reserved per issue; the PR per-item budget is also applied per issue. Issue
+and PR calls share the same daily budget and serialized ledger. A new UTC day
+starts at 08:00 in Asia/Shanghai. Estimates are not provider-enforced spending
+limits. Unavailable models, malformed results, and exhausted budgets are not
+reported as successful reviews.
+
+A maintainer can dispatch `issue-review.yml` for an existing issue. To retry an
+incomplete review once, set `retry_failed` to true; the same item and daily
+limits still apply. Disable the workflow to stop automatic issue reviews.

@@ -56,9 +56,23 @@ class Reservation(BaseModel):
     execution: Literal["reserved", "complete", "incomplete"] = "reserved"
 
 
+class IssueReservation(BaseModel):
+    issue_number: int = Field(gt=0)
+    review_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    estimated_cost_cents: int = Field(gt=0)
+    date_utc: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    run_id: str = Field(pattern=r"^\d+$")
+    run_attempt: int = Field(default=1, gt=0)
+    execution: Literal["reserved", "complete", "incomplete"] = "reserved"
+    category: Literal["bug", "feature", "other"] = "other"
+    unclear_fields: list[str] = Field(default_factory=list)
+    needs_english: bool = False
+
+
 class Reservations(BaseModel):
-    version: Literal[1] = 1
+    version: Literal[1, 2] = 1
     reservations: list[Reservation] = Field(default_factory=list)
+    issue_reservations: list[IssueReservation] = Field(default_factory=list)
 
 
 class GitHubContent(BaseModel):
@@ -148,6 +162,11 @@ def authorize_reservation(
         raise PilotError("Pull request budget exceeded")
     elif (
         sum(entry.estimated_cost_cents for entry in day_runs)
+        + sum(
+            entry.estimated_cost_cents
+            for entry in reservations.issue_reservations
+            if entry.date_utc == reservation.date_utc
+        )
         + reservation.estimated_cost_cents
         > budget.max_cost_cents_per_day
     ):
@@ -172,7 +191,7 @@ def write_reservations(
     content = base64.b64encode(reservations.model_dump_json().encode()).decode()
     body = json.dumps(
         {
-            "message": "Reserve an advisory documentation review",
+            "message": "Record an advisory review reservation",
             "content": content,
             "sha": content_sha,
             "branch": STATE_BRANCH,
