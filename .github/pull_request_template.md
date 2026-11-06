@@ -1,5 +1,7 @@
 <!-- Thank you for your contribution! We appreciate it. The following guidelines will help improve your pull request and facilitate feedback. If anything is unclear, don't hesitate to submit your pull request and ask the maintainers for assistance. -->
 
+<!-- PR labels may be suggested from changed paths, titles, and branch names; see .github/pr-labeler.md. -->
+
 ## Motivation
 
 <!-- Explain the purpose of this PR and the goals it aims to achieve. -->
