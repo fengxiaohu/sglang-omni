@@ -1,8 +1,8 @@
-name: PR Documentation Labeler
+name: PR Labeler
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, edited]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -11,6 +11,10 @@ on:
         type: number
 
 permissions: {}
+
+concurrency:
+  group: pr-labeler-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
 
 jobs:
   label:
@@ -25,3 +29,84 @@ jobs:
           configuration-path: .github/pr-labeler.yml
           sync-labels: false
           pr-number: ${{ github.event.pull_request.number || inputs.pr_number }}
+      - name: Label pull request title and branch
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+        with:
+          script: |
+            const pullRequestNumber = Number(process.env.PR_NUMBER);
+            if (!Number.isSafeInteger(pullRequestNumber) || pullRequestNumber <= 0) {
+              throw new Error('A valid pull request number is required');
+            } else {
+              core.info(`Checking labels for PR #${pullRequestNumber}`);
+            }
+
+            const {owner, repo} = context.repo;
+            const {data: pullRequest} = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullRequestNumber,
+            });
+            const title = pullRequest.title;
+            const branch = pullRequest.head.ref;
+            const labelRules = [
+              {
+                name: 'accessibility',
+                title: /\b(?:a11y|accessib(?:le|ility))\b/i,
+                branch: /(?:^|[\/_.-])(?:a11y|accessibility)(?=$|[\/_.-])/i,
+              },
+              {
+                name: 'bug',
+                title: /\b(?:bug(?:fix)?|regression|hotfix)\b|^(?:\[[^\]]+\]\s*)*(?:fix|fixes)(?:\([^)]+\))?!?:/i,
+                branch: /(?:^|[\/_.-])(?:bug|bugfix|fix|hotfix|regression)(?=$|[\/_.-])/i,
+              },
+              {
+                name: 'duplicate',
+                title: /^(?:\[[^\]]+\]\s*)*(?:duplicate(?:\s+(?:of|pr|pull request))?\s*(?::|#\d+)|\[duplicate\])/i,
+                branch: /(?:^|\/)duplicate(?=$|\/)/i,
+              },
+              {
+                name: 'enhancement',
+                title: /\b(?:enhancement|feature|feat)\b/i,
+                branch: /(?:^|[\/_.-])(?:enhancement|feature|feat)(?=$|[\/_.-])/i,
+              },
+              {
+                name: 'good first issue',
+                title: /\bgood[\s_-]+first[\s_-]+(?:issue|pr|pull request)\b/i,
+                branch: /(?:^|[\/_.-])good[-_]first[-_](?:issue|pr)(?=$|[\/_.-])/i,
+              },
+              {
+                name: 'help wanted',
+                title: /\b(?:help[\s_-]+wanted|needs?[\s_-]+help)\b/i,
+                branch: /(?:^|[\/_.-])(?:help[-_]wanted|needs?[-_]help)(?=$|[\/_.-])/i,
+              },
+              {
+                name: 'invalid',
+                title: /^(?:\[[^\]]+\]\s*)*(?:invalid(?:\s+(?:pr|pull request))?\s*:|\[invalid\])/i,
+                branch: /(?:^|\/)invalid(?=$|\/)/i,
+              },
+              {
+                name: 'question',
+                title: /^(?:\[[^\]]+\]\s*)*(?:question\s*:|\[question\])/i,
+                branch: /(?:^|\/)question(?=$|\/)/i,
+              },
+              {
+                name: 'wontfix',
+                title: /\b(?:wontfix|won't[\s_-]+fix|will[\s_-]+not[\s_-]+fix)\b/i,
+                branch: /(?:^|\/)(?:wontfix|wont[-_]fix|will[-_]not[-_]fix)(?=$|\/)/i,
+              },
+            ];
+            const labels = labelRules
+              .filter(rule => rule.title.test(title) || rule.branch.test(branch))
+              .map(rule => rule.name);
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: pullRequestNumber,
+                labels,
+              });
+            } else {
+              core.info('No title or branch labels matched');
+            }
