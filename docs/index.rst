@@ -91,11 +91,14 @@ Supported Models
    :maxdepth: 1
    :caption: Get Started
 
+   get_started/apiserver_quickstart.md
    get_started/installation.md
-   get_started/installation_npu.md
-   get_started/installation_xpu.md
-   get_started/installation_cpu.md
-   get_started/installation_musa.md
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Other Platforms
+
+   get_started/other_platforms.md
 
 
 .. toctree::
