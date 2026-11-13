@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from difflib import SequenceMatcher
 from pathlib import Path, PurePosixPath
 
@@ -21,7 +22,7 @@ from scripts.docs_review.snapshot import (
     require_git,
 )
 
-UNIT_TEST_POLICY_VERSION = "unit-tests-1"
+UNIT_TEST_POLICY_VERSION = "unit-tests-2"
 UNIT_TEST_ROOT = "tests/unit_test/"
 AUTOMATIC_CONTEXT_BYTES = 36_000
 CONTRACT_MODULES = {"sglang_omni", "sglang_omni_router", "sglang_omni_mlx", "examples"}
@@ -335,6 +336,74 @@ def collect_unit_test_inputs(
     return list(files.values()), cases, limitations
 
 
+def locate_quoted_lines(
+    source: str, citation: SourceCitation
+) -> tuple[int, int] | None:
+    quote = citation.quote.strip()
+    if quote.startswith("```") and quote.endswith("```") and "\n" in quote:
+        quote = quote.split("\n", 1)[1][:-3].strip()
+    else:
+        quote = quote.removeprefix("`").removesuffix("`")
+    quote_lines = [
+        re.sub(r"^\s*\d+: ", "", line).strip() for line in quote.splitlines()
+    ]
+    if not quote_lines or not any(quote_lines):
+        return None
+    else:
+        pass
+
+    source_lines = source.splitlines()
+    matches = []
+    last_start = len(source_lines) - len(quote_lines)
+    for start in range(last_start + 1):
+        lines = source_lines[start : start + len(quote_lines)]
+        if len(quote_lines) == 1 and quote_lines[0] in lines[0]:
+            matches.append((start + 1, start + 1))
+        elif [line.strip() for line in lines] == quote_lines:
+            matches.append((start + 1, start + len(quote_lines)))
+        else:
+            pass
+    return matches[0] if len(matches) == 1 else None
+
+
+def resolve_unit_test_citation(
+    bundle: ReviewBundle, citation: SourceCitation
+) -> SourceCitation | None:
+    if not citation.quote.strip():
+        return None
+    else:
+        pass
+    if citation_matches(
+        bundle,
+        citation.file_path,
+        citation.line_start,
+        citation.line_end,
+        citation.quote,
+    ):
+        return citation
+    else:
+        pass
+    source = next(
+        (file.content for file in bundle.files if file.file_path == citation.file_path),
+        None,
+    )
+    if source is None:
+        return None
+    else:
+        positions = locate_quoted_lines(source, citation)
+        if positions is None:
+            return None
+        else:
+            line_start, line_end = positions
+            return citation.model_copy(
+                update={
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "quote": "\n".join(source.splitlines()[line_start - 1 : line_end]),
+                }
+            )
+
+
 def covers_other_test(
     bundle: ReviewBundle, case: UnitTestCase, duplicate: SourceCitation
 ) -> bool:
@@ -388,35 +457,53 @@ def validate_unit_test_findings(
         if is_context_path(file.file_path)
         and not file.file_path.startswith(UNIT_TEST_ROOT)
     }
-    for finding in findings:
+    for index, finding in enumerate(findings, 1):
+        test_citation = resolve_unit_test_citation(
+            bundle,
+            SourceCitation(
+                file_path=finding.file_path,
+                line_start=finding.line_start,
+                line_end=finding.line_end,
+                quote=finding.quote,
+            ),
+        )
         case = next(
             (
                 case
                 for case in bundle.unit_test_cases
-                if case.file_path == finding.file_path
+                if test_citation is not None
+                and case.file_path == test_citation.file_path
                 and case.line_start
-                <= finding.line_start
-                <= finding.line_end
+                <= test_citation.line_start
+                <= test_citation.line_end
                 <= case.line_end
                 and any(
-                    start <= finding.line_end and finding.line_start <= end
+                    start <= test_citation.line_end and test_citation.line_start <= end
                     for start, end in case.changed_line_ranges
                 )
             ),
             None,
         )
-        if (
-            case is None
-            or not finding.quote.strip()
-            or not citation_matches(
+        evidence_citation = (
+            resolve_unit_test_citation(
                 bundle,
-                finding.file_path,
-                finding.line_start,
-                finding.line_end,
-                finding.quote,
+                SourceCitation(
+                    file_path=finding.evidence_file_path,
+                    line_start=finding.evidence_line_start,
+                    line_end=finding.evidence_line_end,
+                    quote=finding.evidence_quote,
+                ),
             )
-        ):
-            dropped += 1
+            if finding.evidence_file_path in contract_paths
+            else None
+        )
+        duplicate = (
+            resolve_unit_test_citation(bundle, finding.duplicate_test)
+            if finding.duplicate_test is not None
+            else None
+        )
+        if test_citation is None or case is None:
+            rejection = "test citation does not match a changed case"
         elif (
             finding.rule_id == INSUFFICIENT_EVIDENCE
             and finding.certainty == "uncertain"
@@ -425,42 +512,50 @@ def validate_unit_test_findings(
                 f"{case.file_path}:{case.line_start}: insufficient contract evidence "
                 f"for {case.name}. {finding.claim.strip()}"
             )
+            continue
         elif (
             finding.rule_id not in UNIT_TEST_RULE_IDS
             or finding.certainty != "supported"
-            or not finding.claim.strip()
-            or not finding.public_contract.strip()
-            or not finding.regression.strip()
-            or not finding.impact.strip()
-            or not finding.suggested_fix.strip()
-            or not finding.evidence_quote.strip()
-            or finding.evidence_file_path not in contract_paths
-            or not citation_matches(
-                bundle,
-                finding.evidence_file_path,
-                finding.evidence_line_start,
-                finding.evidence_line_end,
-                finding.evidence_quote,
+        ):
+            rejection = "unsupported rule or certainty"
+        elif not all(
+            value.strip()
+            for value in (
+                finding.claim,
+                finding.public_contract,
+                finding.regression,
+                finding.impact,
+                finding.suggested_fix,
             )
         ):
-            dropped += 1
+            rejection = "missing contract, regression, impact, or suggested fix"
+        elif evidence_citation is None:
+            rejection = "contract citation does not match the collected source"
         elif finding.rule_id == DUPLICATE_RULE_ID and (
-            finding.duplicate_test is None
-            or not covers_other_test(bundle, case, finding.duplicate_test)
+            duplicate is None or not covers_other_test(bundle, case, duplicate)
         ):
-            dropped += 1
+            rejection = "covering citation does not match a different test"
         elif (
             finding.rule_id != DUPLICATE_RULE_ID and finding.duplicate_test is not None
         ):
-            dropped += 1
-        elif finding.change_relation == "pre_existing":
-            pre_existing.append(finding)
+            rejection = "covering citation was supplied for a nonduplicate finding"
         else:
-            accepted.append(finding)
-    if dropped:
-        limitations.append(
-            f"{dropped} unit-test findings lacked valid scope, evidence, or regression details"
-        )
-    else:
-        pass
+            verified_finding = finding.model_copy(
+                update={
+                    "line_start": test_citation.line_start,
+                    "line_end": test_citation.line_end,
+                    "quote": test_citation.quote,
+                    "evidence_line_start": evidence_citation.line_start,
+                    "evidence_line_end": evidence_citation.line_end,
+                    "evidence_quote": evidence_citation.quote,
+                    "duplicate_test": duplicate,
+                }
+            )
+            if verified_finding.change_relation == "pre_existing":
+                pre_existing.append(verified_finding)
+            else:
+                accepted.append(verified_finding)
+            continue
+        dropped += 1
+        limitations.append(f"Candidate {index}: {rejection}.")
     return accepted, pre_existing, dropped, limitations

@@ -215,7 +215,8 @@ def test_replays_weak_and_strengthened_contract_cases(
 
 
 @pytest.mark.parametrize(
-    "failure", ["unchanged", "empty_regression", "bad_evidence", "unknown"]
+    "failure",
+    ["unchanged", "empty_regression", "bad_evidence", "unknown", "formatting"],
 )
 def test_incomplete_candidates_stay_out_of_the_review(
     tmp_path: Path, failure: str
@@ -235,7 +236,7 @@ def test_incomplete_candidates_stay_out_of_the_review(
     write_file(
         tmp_path,
         test_path,
-        original + "\n\ndef test_new():\n    assert speak()\n",
+        original + "\n\ndef test_new():\n    assert speak().endswith(b'WAV')\n",
     )
     head = commit(tmp_path, "weaker overlapping test")
     finding = Finding(
@@ -243,8 +244,8 @@ def test_incomplete_candidates_stay_out_of_the_review(
         file_path=test_path,
         line_start=8,
         line_end=8,
-        quote="assert speak()",
-        claim="The test checks only that the output is nonempty.",
+        quote="assert speak().endswith(b'WAV')",
+        claim="The test checks a suffix instead of the WAV header.",
         evidence_file_path=contract_path,
         evidence_line_start=2,
         evidence_line_end=2,
@@ -263,6 +264,11 @@ def test_incomplete_candidates_stay_out_of_the_review(
         finding.regression = " "
     elif failure == "bad_evidence":
         finding.evidence_quote = "return b'OggS'"
+    elif failure == "formatting":
+        finding.line_start = finding.line_end = 9
+        finding.quote = "`assert speak().endswith(b'WAV')`"
+        finding.evidence_line_start = finding.evidence_line_end = 1
+        finding.evidence_quote = "2:     return b'RIFF'"
     else:
         finding.rule_id = "UNIT_TEST_INSUFFICIENT_EVIDENCE"
         finding.certainty = "uncertain"
@@ -271,8 +277,17 @@ def test_incomplete_candidates_stay_out_of_the_review(
         request_for(tmp_path, base, head, 1), OfflineReviewer([finding]), SystemClock()
     )
     assert [case.name for case in result.report.unit_test_cases] == ["test_new"]
-    assert result.report.findings == []
-    assert result.report.outcome == "incomplete"
+    if failure == "formatting":
+        assert result.report.outcome == "findings", result.report.incomplete_reason
+        verified = result.report.findings[0]
+        assert (verified.line_start, verified.line_end) == (8, 8)
+        assert verified.quote.strip() == "assert speak().endswith(b'WAV')"
+        assert (verified.evidence_line_start, verified.evidence_line_end) == (2, 2)
+        assert verified.evidence_quote.strip() == "return b'RIFF'"
+        return
+    else:
+        assert result.report.findings == []
+        assert result.report.outcome == "incomplete"
     if failure == "unknown":
         assert "insufficient contract evidence" in result.report.incomplete_reason
     else:
