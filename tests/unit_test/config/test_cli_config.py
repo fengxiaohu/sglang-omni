@@ -112,7 +112,22 @@ class TestResolve:
         expected = ConfigManager.from_file(str(config_file)).config
         assert yaml.safe_load(result.stdout) == dump_user_config(expected)
 
-    def test_dotted_arguments_are_applied_like_serve_applies_them(
+    def test_config_resolve_prints_the_requested_memory_fraction(
+        self, runner, plain_config_file, stage
+    ):
+        argv = [f"--{stage}.engine.mem_fraction_static", "0.35"]
+        result = runner.invoke(
+            config_app, ["resolve", "--config", str(plain_config_file), *argv]
+        )
+
+        assert result.exit_code == 0, output_of(result)
+        manager = ConfigManager.from_file(str(plain_config_file))
+        expected = manager.merge_config(manager.parse_extra_args(argv))
+        printed = yaml.safe_load(result.stdout)
+        assert printed == dump_user_config(expected)
+        assert printed["stages"][stage]["engine"]["mem_fraction_static"] == 0.35
+
+    def test_config_resolve_prints_the_server_configuration(
         self, runner, plain_config_file, stage
     ):
         argv = [f"--{stage}.engine.mem-fraction-static", "0.35"]
