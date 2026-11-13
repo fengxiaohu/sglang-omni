@@ -81,7 +81,7 @@ python -m scripts.review_docs review --review-scope unit_tests \
 
 The reviewed files and changed case names appear in the output bundle. Supply `--model-file` and `--budget-file` for a semantic review.
 
-The maintainer can dispatch `docs-review-pilot.yml` with `review_scope=unit_tests` and inspect the encrypted report before choosing findings. A maintainer can set the repository variable `UNIT_TEST_REVIEW_PILOT_REF` to a trusted branch's full Git ref for an isolated unit-test pilot and configure `UNIT_TEST_REVIEW_PILOT_REPORT_KEY` for its reports. Publish selected findings from the default branch after the reviewer is integrated there.
+The maintainer can dispatch `docs-review-pilot.yml` with `review_scope=unit_tests` and inspect the encrypted report before choosing findings. A maintainer can set the repository variable `UNIT_TEST_REVIEW_PILOT_REF` to a trusted branch's full Git ref for an isolated unit-test pilot and configure `UNIT_TEST_REVIEW_PILOT_REPORT_KEY` for its reports. `UNIT_TEST_REVIEW_PILOT_MODEL` can override the model settings on that ref, including the provider’s reasoning effort and token-limit field. Publish selected findings from the default branch after the reviewer is integrated there.
 
 ## Automatic issue review
 

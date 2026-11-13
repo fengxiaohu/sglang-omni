@@ -85,6 +85,7 @@ class ModelSettings(BaseModel):
     max_output_tokens: int = Field(gt=0)
     api_key_environment_variable: str
     reasoning_effort: ReasoningEffort | None = None
+    token_limit_field: Literal["max_tokens", "max_completion_tokens"] | None = None
 
     @model_validator(mode="after")
     def set_default_reasoning_effort(self) -> ModelSettings:

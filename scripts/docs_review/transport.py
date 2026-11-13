@@ -91,20 +91,23 @@ def build_chat_request(
         ChatMessage(role="system", content=prompt_text),
         ChatMessage(role="user", content=bundle_text),
     ]
-    if settings.reasoning_effort is None:
-        return ChatRequest(
-            model_name=settings.model_name,
-            messages=messages,
-            max_tokens=settings.max_output_tokens,
-            temperature=0,
-        )
-    else:
-        return ChatRequest(
-            model_name=settings.model_name,
-            messages=messages,
-            max_completion_tokens=settings.max_output_tokens,
-            reasoning_effort=settings.reasoning_effort,
-        )
+    token_limit_field = settings.token_limit_field or (
+        "max_tokens" if settings.reasoning_effort is None else "max_completion_tokens"
+    )
+    return ChatRequest(
+        model_name=settings.model_name,
+        messages=messages,
+        max_tokens=(
+            settings.max_output_tokens if token_limit_field == "max_tokens" else None
+        ),
+        max_completion_tokens=(
+            settings.max_output_tokens
+            if token_limit_field == "max_completion_tokens"
+            else None
+        ),
+        temperature=0 if settings.reasoning_effort is None else None,
+        reasoning_effort=settings.reasoning_effort,
+    )
 
 
 def authorization_header(settings: ModelSettings) -> str:

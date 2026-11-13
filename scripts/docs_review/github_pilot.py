@@ -339,8 +339,13 @@ def run_github_review() -> None:
         model_settings = None
         budget = None
     else:
+        pilot_model = (
+            os.environ.get("UNIT_TEST_REVIEW_PILOT_MODEL")
+            if review_scope == "unit_tests"
+            else None
+        )
         model_settings = ModelSettings.model_validate_json(
-            os.environ["DOCS_REVIEW_MODEL"]
+            pilot_model or os.environ["DOCS_REVIEW_MODEL"]
         )
         budget = BudgetConfig.model_validate_json(os.environ["DOCS_REVIEW_BUDGET"])
         if model_settings.api_key_environment_variable != "DOCS_REVIEW_API_KEY":
