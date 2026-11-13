@@ -323,6 +323,18 @@ def test_unit_test_review_delivers_only_an_encrypted_report(
         state="open", body="Expected answer", base={"sha": base}, head={"sha": head}
     )
     monkeypatch.setenv("REVIEW_SCOPE", "unit_tests")
+    monkeypatch.setenv(
+        "UNIT_TEST_REVIEW_PILOT_MODEL",
+        json.dumps(
+            {
+                "model_name": "unit-test-reviewer",
+                "endpoint_url": "https://example.invalid/v1/chat/completions",
+                "max_output_tokens": 8192,
+                "api_key_environment_variable": "DOCS_REVIEW_API_KEY",
+                "response_format": "json_object",
+            }
+        ),
+    )
     monkeypatch.setattr(
         github_pilot, "fetch_pull_request", lambda name, number: pull_request
     )
@@ -352,29 +364,33 @@ def test_unit_test_review_delivers_only_an_encrypted_report(
 
     def review(reviewer: OpenAICompatibleReviewer, bundle_text: str) -> str:
         assert "Test the public contract" in reviewer.prompt_text
+        assert reviewer.settings.model_name == "unit-test-reviewer"
+        assert reviewer.settings.response_format == "json_object"
         assert '"name": "Unit"' in bundle_text
         assert len(reservations.reservations) == 1
         return json.dumps(
-            [
-                {
-                    "rule_id": "UNIT_TEST_INTERNAL_ASSERTION",
-                    "file_path": test_path,
-                    "line_start": 4,
-                    "line_end": 4,
-                    "quote": "assert speak()",
-                    "claim": "This assertion accepts any nonempty output.",
-                    "evidence_file_path": contract_path,
-                    "evidence_line_start": 2,
-                    "evidence_line_end": 2,
-                    "evidence_quote": "return b'RIFF'",
-                    "public_contract": "The caller receives WAV bytes.",
-                    "regression": "Returning raw PCM would still satisfy this test.",
-                    "impact": "A client expecting WAV cannot parse the audio.",
-                    "suggested_fix": "Assert the RIFF header in the response.",
-                    "change_relation": "introduced",
-                    "certainty": "supported",
-                }
-            ]
+            {
+                "findings": [
+                    {
+                        "rule_id": "UNIT_TEST_INTERNAL_ASSERTION",
+                        "file_path": test_path,
+                        "line_start": 4,
+                        "line_end": 4,
+                        "quote": "assert speak()",
+                        "claim": "This assertion accepts any nonempty output.",
+                        "evidence_file_path": contract_path,
+                        "evidence_line_start": 2,
+                        "evidence_line_end": 2,
+                        "evidence_quote": "return b'RIFF'",
+                        "public_contract": "The caller receives WAV bytes.",
+                        "regression": "Returning raw PCM would still satisfy this test.",
+                        "impact": "A client expecting WAV cannot parse the audio.",
+                        "suggested_fix": "Assert the RIFF header in the response.",
+                        "change_relation": "introduced",
+                        "certainty": "supported",
+                    }
+                ]
+            }
         )
 
     monkeypatch.setattr(OpenAICompatibleReviewer, "review", review)

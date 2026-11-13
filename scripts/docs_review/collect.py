@@ -167,12 +167,20 @@ def collect_review_bundle(request: ReviewRequest) -> ReviewBundle:
 def review_input_sha256(
     bundle: ReviewBundle, model_settings: ModelSettings | None, prompt_version: str
 ) -> str:
-    if model_settings is None:
-        model_configuration = None
-    elif model_settings.token_limit_field is None:
-        model_configuration = model_settings.model_dump(exclude={"token_limit_field"})
+    model_configuration = (
+        model_settings.model_dump() if model_settings is not None else None
+    )
+    if model_configuration is not None and model_settings is not None:
+        if model_settings.token_limit_field is None:
+            model_configuration.pop("token_limit_field")
+        else:
+            pass
+        if model_settings.response_format is None:
+            model_configuration.pop("response_format")
+        else:
+            pass
     else:
-        model_configuration = model_settings.model_dump()
+        pass
     parts = [
         bundle.repository_identity,
         bundle.base_commit_sha,

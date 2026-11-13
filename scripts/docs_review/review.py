@@ -31,6 +31,7 @@ from scripts.docs_review.models import (
     Report,
     ReviewBundle,
     ReviewRequest,
+    ReviewScope,
 )
 from scripts.docs_review.policy import KNOWN_RULE_IDS, read_prompt
 from scripts.docs_review.reporting import render_bundle
@@ -189,7 +190,7 @@ def review_uncached(
             usage_cost_cents=usage_cost_cents,
         )
     else:
-        parsed = parse_model_findings(raw_output)
+        parsed = parse_model_findings(raw_output, bundle.review_scope)
         if parsed is None:
             report = assemble_report(
                 bundle=bundle,
@@ -233,11 +234,29 @@ def call_with_retries(
     return raw_output, attempts, last_error
 
 
-def parse_model_findings(raw: str) -> list[Finding] | None:
+def parse_model_findings(
+    raw: str, review_scope: ReviewScope = "docs"
+) -> list[Finding] | None:
+    if review_scope == "unit_tests":
+        raw = raw.strip()
+        if raw.startswith(("```json\n", "```\n")) and raw.endswith("\n```"):
+            raw = raw.split("\n", 1)[1][:-4]
+        else:
+            pass
+    else:
+        pass
     try:
         payload: object = json.loads(raw)
     except json.JSONDecodeError:
         return None
+    else:
+        pass
+    if (
+        review_scope == "unit_tests"
+        and isinstance(payload, dict)
+        and set(payload) == {"findings"}
+    ):
+        payload = payload["findings"]
     else:
         pass
     if not isinstance(payload, list):

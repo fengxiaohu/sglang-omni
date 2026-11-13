@@ -26,6 +26,10 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class ChatResponseFormat(BaseModel):
+    type: Literal["json_object"]
+
+
 class ChatRequest(BaseModel):
     """JSON body sent to an OpenAI-compatible chat endpoint."""
 
@@ -35,6 +39,7 @@ class ChatRequest(BaseModel):
     max_completion_tokens: int | None = Field(default=None, gt=0)
     temperature: Literal[0] | None = None
     reasoning_effort: ReasoningEffort | None = None
+    response_format: ChatResponseFormat | None = None
 
     def to_json(self) -> str:
         return self.model_dump_json(by_alias=True, exclude_none=True)
@@ -107,6 +112,11 @@ def build_chat_request(
         ),
         temperature=0 if settings.reasoning_effort is None else None,
         reasoning_effort=settings.reasoning_effort,
+        response_format=(
+            ChatResponseFormat(type=settings.response_format)
+            if settings.response_format is not None
+            else None
+        ),
     )
 
 
