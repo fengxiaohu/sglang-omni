@@ -35,7 +35,12 @@ from scripts.docs_review.models import (
 from scripts.docs_review.policy import KNOWN_RULE_IDS, read_prompt
 from scripts.docs_review.reporting import render_bundle
 from scripts.docs_review.snapshot import citation_matches
-from scripts.docs_review.transport import OpenAICompatibleReviewer, ReviewerError
+from scripts.docs_review.transport import (
+    MODEL_TIMEOUT_SECONDS,
+    UNIT_TEST_MODEL_TIMEOUT_SECONDS,
+    OpenAICompatibleReviewer,
+    ReviewerError,
+)
 from scripts.docs_review.unit_tests import validate_unit_test_findings
 
 
@@ -159,22 +164,28 @@ def review_uncached(
             raise RuntimeError("model settings missing after authorization")
         else:
             active_reviewer: DocumentationReviewer = OpenAICompatibleReviewer(
-                settings, prompt_text
+                settings,
+                prompt_text,
+                timeout_seconds=(
+                    UNIT_TEST_MODEL_TIMEOUT_SECONDS
+                    if bundle.review_scope == "unit_tests"
+                    else MODEL_TIMEOUT_SECONDS
+                ),
             )
     else:
         active_reviewer = reviewer
-    raw_output, attempts, failed = call_with_retries(
+    raw_output, attempts, model_error = call_with_retries(
         active_reviewer, render_bundle(bundle), request.retry_count
     )
     usage_cost_cents = attempts * request.budget.call_cost_cents
-    if failed or raw_output is None:
+    if raw_output is None:
         report = assemble_report(
             bundle=bundle,
             prompt_version=prompt_version,
             input_hash=input_hash,
             model_findings=None,
             model_failed=True,
-            incomplete_reason="model request failed",
+            incomplete_reason=model_error or "model request failed",
             usage_cost_cents=usage_cost_cents,
         )
     else:
@@ -205,19 +216,19 @@ def review_uncached(
 
 def call_with_retries(
     reviewer: DocumentationReviewer, bundle_text: str, retry_count: int
-) -> tuple[str | None, int, bool]:
+) -> tuple[str | None, int, str]:
     attempts = 0
-    last_error = False
+    last_error = ""
     raw_output: str | None = None
     while attempts <= retry_count:
         attempts += 1
         try:
             raw_output = reviewer.review(bundle_text)
-        except ReviewerError:
-            last_error = True
+        except ReviewerError as error:
+            last_error = str(error)
             raw_output = None
         else:
-            last_error = False
+            last_error = ""
             break
     return raw_output, attempts, last_error
 

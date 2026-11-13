@@ -343,11 +343,23 @@ def locate_quoted_lines(
     if quote.startswith("```") and quote.endswith("```") and "\n" in quote:
         quote = quote.split("\n", 1)[1][:-3].strip()
     else:
-        quote = quote.removeprefix("`").removesuffix("`")
-    quote_lines = [
-        re.sub(r"^\s*\d+: ", "", line).strip() for line in quote.splitlines()
-    ]
+        pass
+    quote_lines = []
+    for line in quote.splitlines():
+        quote_lines.append(re.sub(r"^\s*\d+: ", "", line).strip())
     if not quote_lines or not any(quote_lines):
+        return None
+    else:
+        pass
+    if (
+        len(quote_lines) == 1
+        and quote_lines[0].startswith("`")
+        and quote_lines[0].endswith("`")
+    ):
+        quote_lines[0] = quote_lines[0][1:-1].strip()
+    else:
+        pass
+    if not any(quote_lines):
         return None
     else:
         pass
