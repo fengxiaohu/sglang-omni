@@ -112,10 +112,10 @@ class TestResolve:
         expected = ConfigManager.from_file(str(config_file)).config
         assert yaml.safe_load(result.stdout) == dump_user_config(expected)
 
-    def test_dotted_arguments_are_applied_like_serve_applies_them(
+    def test_resolve_memory_fraction_override(
         self, runner, plain_config_file, stage
     ):
-        argv = [f"--{stage}.engine.mem-fraction-static", "0.35"]
+        argv = [f"--{stage}.engine.mem_fraction_static", "0.35"]
         result = runner.invoke(
             config_app, ["resolve", "--config", str(plain_config_file), *argv]
         )
