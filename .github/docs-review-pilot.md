@@ -2,7 +2,7 @@
 
 This maintainer-triggered workflow reviews documentation changes without executing
 pull request code. It is advisory and does not approve, merge, close, or post to a
-pull request. It runs only from the default branch. A reviewer must inspect and
+pull request. The default branch supports both review scopes. A reviewer must inspect and
 choose any result before publishing it.
 
 The Actions workflow has an offline mode for checking collection without a model
@@ -63,6 +63,25 @@ gh workflow run docs-review-publish.yml --repo OWNER/REPO --ref main \
 The publishing workflow refuses an incomplete report or a changed base or head.
 It labels the comment with the reviewed commit and attempts to mark it stale if
 the pull request changes during publication. Findings remain advisory.
+
+## Unit-test contract review
+
+Choose `review_scope=unit_tests` to review added and edited Python test cases under `tests/unit_test/`. The report uses the test and its caller-visible contract to identify a concrete regression, show the relevant lines, and propose an assertion that would catch it. A duplicate finding must also cite the other test. Missing contract evidence leaves the review incomplete.
+
+The collector reads fixed Git revisions and selects direct edits to test functions and their own decorators. Edits confined to shared fixtures, imports, or class and module settings do not select a test by themselves. The rest of the changed file and imports referenced by the selected cases provide context. Use `unit_test_context_paths` to select additional source files, docs, or neighboring tests, one path per line. The report shows existing GitHub check summaries for the reviewed head where available. Check results provide context for the review. The workflow never runs the PR's tests.
+
+Run locally with the same model and budget options as the documentation reviewer:
+
+```sh
+python -m scripts.review_docs review --review-scope unit_tests \
+  --repository . --base-commit BASE_SHA --head-commit HEAD_SHA \
+  --pull-request-number PR_NUMBER --include-path path/to/contract.py \
+  --ledger /tmp/unit-test-review.sqlite --output-directory /tmp/unit-test-review
+```
+
+The reviewed files and changed case names appear in the output bundle. Supply `--model-file` and `--budget-file` for a semantic review.
+
+The maintainer can dispatch `docs-review-pilot.yml` with `review_scope=unit_tests` and inspect the encrypted report before choosing findings. A maintainer can set the repository variable `UNIT_TEST_REVIEW_PILOT_REF` to a trusted branch's full Git ref for an isolated unit-test pilot and configure `UNIT_TEST_REVIEW_PILOT_REPORT_KEY` for its reports. Publish selected findings from the default branch after the reviewer is integrated there.
 
 ## Automatic issue review
 

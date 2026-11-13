@@ -295,3 +295,99 @@ def test_publish_rejects_invalid_selection() -> None:
     assert "@" not in github_publish.safe_text("@team [click](https://example.invalid)")
     with pytest.raises(PilotError, match="comma-separated"):
         github_publish.selected_findings(Report.model_construct(findings=[]), "1;2")
+
+
+def test_unit_test_review_delivers_only_an_encrypted_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base, _, report_key = configure_run(tmp_path, monkeypatch, offline=False)
+    repository = tmp_path / "repository"
+    test_path = "tests/unit_test/test_output.py"
+    contract_path = "sglang_omni/api.py"
+    for file_path, content in (
+        (
+            test_path,
+            "from sglang_omni.api import speak\n\ndef test_output():\n    assert speak()\n",
+        ),
+        (contract_path, "def speak():\n    return b'RIFF'\n"),
+    ):
+        target = repository / file_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repository), "commit", "-qm", "Test"], check=True)
+    head = subprocess.check_output(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True
+    ).strip()
+    pull_request = github_pilot.PullRequest(
+        state="open", body="Expected answer", base={"sha": base}, head={"sha": head}
+    )
+    monkeypatch.setenv("REVIEW_SCOPE", "unit_tests")
+    monkeypatch.setattr(
+        github_pilot, "fetch_pull_request", lambda name, number: pull_request
+    )
+    monkeypatch.setattr(
+        github_pilot,
+        "github_api",
+        lambda endpoint: json.dumps(
+            {
+                "check_runs": [
+                    {
+                        "name": "Unit",
+                        "head_sha": head,
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ]
+            }
+        ),
+    )
+    reservations = Reservations()
+    monkeypatch.setattr(
+        github_pilot, "load_reservations", lambda name: (reservations, "a" * 40)
+    )
+    monkeypatch.setattr(
+        github_pilot, "write_reservations", lambda name, ledger, sha: None
+    )
+
+    def review(reviewer: OpenAICompatibleReviewer, bundle_text: str) -> str:
+        assert "Test the public contract" in reviewer.prompt_text
+        assert '"name": "Unit"' in bundle_text
+        assert len(reservations.reservations) == 1
+        return json.dumps(
+            [
+                {
+                    "rule_id": "UNIT_TEST_INTERNAL_ASSERTION",
+                    "file_path": test_path,
+                    "line_start": 4,
+                    "line_end": 4,
+                    "quote": "assert speak()",
+                    "claim": "This assertion accepts any nonempty output.",
+                    "evidence_file_path": contract_path,
+                    "evidence_line_start": 2,
+                    "evidence_line_end": 2,
+                    "evidence_quote": "return b'RIFF'",
+                    "public_contract": "The caller receives WAV bytes.",
+                    "regression": "Returning raw PCM would still satisfy this test.",
+                    "impact": "A client expecting WAV cannot parse the audio.",
+                    "suggested_fix": "Assert the RIFF header in the response.",
+                    "change_relation": "introduced",
+                    "certainty": "supported",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(OpenAICompatibleReviewer, "review", review)
+    github_pilot.run_github_review()
+    encrypted = (tmp_path / "docs-review" / "report.fernet").read_bytes()
+    report = json.loads(Fernet(report_key).decrypt(encrypted))["report"]
+    assert report["review_scope"] == "unit_tests"
+    assert report["outcome"] == "findings"
+    assert (
+        report["findings"][0]["regression"]
+        == "Returning raw PCM would still satisfy this test."
+    )
+    assert report["check_results"][0]["execution_commit_sha"] == head
+    output = capsys.readouterr().out
+    assert "findings=1" in output
+    assert "Returning raw PCM" not in output

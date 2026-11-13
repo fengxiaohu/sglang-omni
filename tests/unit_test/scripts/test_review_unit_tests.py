@@ -1,0 +1,333 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Replay contract-review inputs from the unit-test cleanup."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+from pydantic import BaseModel
+
+from scripts.docs_review.models import BudgetConfig, Finding, ReviewRequest
+from scripts.docs_review.reporting import render_markdown
+from scripts.docs_review.review import SystemClock, run_review
+
+FIXTURE_PATH = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "unit_test_review_2874.json"
+)
+
+
+class HistoricalCase(BaseModel):
+    test_path: str
+    name: str
+    before: str
+    after: str
+    contract_path: str
+    contract_source: str
+
+
+class HistoricalFixtures(BaseModel):
+    before_commit: str
+    after_commit: str
+    examples: list[HistoricalCase]
+
+
+class OfflineReviewer:
+    def __init__(self, findings: list[Finding]) -> None:
+        self.findings = findings
+        self.inputs: list[str] = []
+
+    def review(self, bundle_text: str) -> str:
+        self.inputs.append(bundle_text)
+        return json.dumps([finding.model_dump() for finding in self.findings])
+
+
+def git(repository: Path, *arguments: str) -> str:
+    return subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "user.name=Review Test",
+            "-c",
+            "user.email=review@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            *arguments,
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def write_file(repository: Path, file_path: str, content: str) -> None:
+    target = repository / file_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+
+
+def commit(repository: Path, message: str) -> str:
+    git(repository, "add", ".")
+    git(repository, "commit", "-qm", message)
+    return git(repository, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def historical_cases() -> list[HistoricalCase]:
+    return HistoricalFixtures.model_validate_json(FIXTURE_PATH.read_text()).examples
+
+
+def historical_revisions(
+    repository: Path, example: HistoricalCase
+) -> tuple[str, str, str]:
+    git(repository, "init", "-q")
+    write_file(repository, example.contract_path, example.contract_source)
+    base_commit = commit(repository, "contract")
+    write_file(repository, example.test_path, example.before)
+    before_commit = commit(repository, "before")
+    write_file(repository, example.test_path, example.after)
+    after_commit = commit(repository, "after")
+    return base_commit, before_commit, after_commit
+
+
+def request_for(
+    repository: Path, base_commit: str, head_commit: str, number: int
+) -> ReviewRequest:
+    return ReviewRequest(
+        repository=repository,
+        base_commit_sha=base_commit,
+        head_commit_sha=head_commit,
+        pull_request_number=number,
+        pull_request_text="",
+        review_scope="unit_tests",
+        ledger_path=repository / ".git" / "review.sqlite",
+        budget=BudgetConfig(
+            max_cost_cents_per_call=1,
+            max_cost_cents_per_pull_request=1,
+            max_cost_cents_per_day=10,
+            call_cost_cents=1,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "example_index",
+        "rule_id",
+        "test_quote",
+        "contract_quote",
+        "public_contract",
+        "regression",
+        "strong_assertion",
+    ),
+    [
+        (
+            0,
+            "UNIT_TEST_SELF_DERIVED_EXPECTATION",
+            "assert yaml.safe_load(result.stdout) == dump_user_config(expected)",
+            "Takes the same arguments as `sgl-omni serve`, including dotted overrides",
+            "config resolve writes the requested stage override into YAML.",
+            "If the CLI and ConfigManager both ignore the override, the original "
+            "comparison can pass while the emitted YAML retains the default.",
+            'assert printed["stages"][stage]["engine"]["mem_fraction_static"] == 0.35',
+        ),
+        (
+            1,
+            "UNIT_TEST_INTERNAL_ASSERTION",
+            "restore_admin_disabled_state(workers, previous, outcome_safe=False)",
+            "journal.keep([worker.worker_id for worker in workers])",
+            "POST /update_weights_from_disk keeps every target disabled and journaled "
+            "when a worker disconnects during the update.",
+            "If the broadcast exception bypasses recovery, a worker with uncertain "
+            "weights can serve traffic and the recovery journal can lose the target.",
+            'client.post("/update_weights_from_disk", json={"path": "/m"})',
+        ),
+    ],
+)
+def test_replays_weak_and_strengthened_contract_cases(
+    tmp_path: Path,
+    historical_cases: list[HistoricalCase],
+    example_index: int,
+    rule_id: str,
+    test_quote: str,
+    contract_quote: str,
+    public_contract: str,
+    regression: str,
+    strong_assertion: str,
+) -> None:
+    example = historical_cases[example_index]
+    base_commit, before_commit, after_commit = historical_revisions(tmp_path, example)
+    test_line = next(
+        index
+        for index, line in enumerate(example.before.splitlines(), 1)
+        if test_quote in line
+    )
+    contract_line = next(
+        index
+        for index, line in enumerate(example.contract_source.splitlines(), 1)
+        if contract_quote in line
+    )
+    weak_finding = Finding(
+        rule_id=rule_id,
+        file_path=example.test_path,
+        line_start=test_line,
+        line_end=test_line,
+        quote=test_quote,
+        claim="This case can pass without detecting the contract regression.",
+        evidence_file_path=example.contract_path,
+        evidence_line_start=contract_line,
+        evidence_line_end=contract_line,
+        evidence_quote=contract_quote,
+        impact=regression,
+        suggested_fix=f"Exercise the entry point and check the outcome using {strong_assertion}.",
+        change_relation="introduced",
+        certainty="supported",
+        public_contract=public_contract,
+        regression=regression,
+    )
+
+    before_reviewer = OfflineReviewer([weak_finding])
+    before = run_review(
+        request_for(tmp_path, base_commit, before_commit, 1),
+        before_reviewer,
+        SystemClock(),
+    )
+    assert before.report.outcome == "findings", before.report.incomplete_reason
+    assert before.report.findings == [weak_finding]
+    assert public_contract in render_markdown(before.report)
+    assert regression in render_markdown(before.report)
+    assert contract_quote in before_reviewer.inputs[0]
+
+    after_reviewer = OfflineReviewer([])
+    after_request = request_for(tmp_path, before_commit, after_commit, 2)
+    after_request.include_paths.append(example.contract_path)
+    after = run_review(after_request, after_reviewer, SystemClock())
+    assert after.report.outcome == "no_findings"
+    assert [case.name for case in after.payload.unit_test_cases] == [example.name]
+    assert test_quote in after.payload.unit_test_cases[0].previous_source
+    assert strong_assertion in after_reviewer.inputs[0]
+    assert contract_quote in after_reviewer.inputs[0]
+
+
+@pytest.mark.parametrize(
+    "failure", ["unchanged", "empty_regression", "bad_evidence", "unknown"]
+)
+def test_incomplete_candidates_stay_out_of_the_review(
+    tmp_path: Path, failure: str
+) -> None:
+    git(tmp_path, "init", "-q")
+    test_path = "tests/unit_test/test_output.py"
+    contract_path = "sglang_omni/api.py"
+    write_file(tmp_path, contract_path, "def speak():\n    return b'RIFF'\n")
+    write_file(
+        tmp_path,
+        test_path,
+        "from sglang_omni.api import speak\n\n"
+        "def test_existing():\n    assert speak().startswith(b'RIFF')\n",
+    )
+    base = commit(tmp_path, "existing contract test")
+    original = (tmp_path / test_path).read_text()
+    write_file(
+        tmp_path,
+        test_path,
+        original + "\n\ndef test_new():\n    assert speak()\n",
+    )
+    head = commit(tmp_path, "weaker overlapping test")
+    finding = Finding(
+        rule_id="UNIT_TEST_INTERNAL_ASSERTION",
+        file_path=test_path,
+        line_start=8,
+        line_end=8,
+        quote="assert speak()",
+        claim="The test checks only that the output is nonempty.",
+        evidence_file_path=contract_path,
+        evidence_line_start=2,
+        evidence_line_end=2,
+        evidence_quote="return b'RIFF'",
+        public_contract="speak returns a WAV payload.",
+        regression="Nonempty raw PCM would be accepted as a WAV payload.",
+        impact="A WAV caller cannot decode the result.",
+        suggested_fix="Assert the WAV header.",
+        change_relation="introduced",
+        certainty="supported",
+    )
+    if failure == "unchanged":
+        finding.line_start = finding.line_end = 4
+        finding.quote = "assert speak().startswith(b'RIFF')"
+    elif failure == "empty_regression":
+        finding.regression = " "
+    elif failure == "bad_evidence":
+        finding.evidence_quote = "return b'OggS'"
+    else:
+        finding.rule_id = "UNIT_TEST_INSUFFICIENT_EVIDENCE"
+        finding.certainty = "uncertain"
+        finding.evidence_quote = ""
+    result = run_review(
+        request_for(tmp_path, base, head, 1), OfflineReviewer([finding]), SystemClock()
+    )
+    assert [case.name for case in result.report.unit_test_cases] == ["test_new"]
+    assert result.report.findings == []
+    assert result.report.outcome == "incomplete"
+    if failure == "unknown":
+        assert "insufficient contract evidence" in result.report.incomplete_reason
+    else:
+        assert result.report.dropped_citation_count == 1
+
+
+def test_pure_test_file_rename_does_not_call_the_reviewer(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    original = "tests/unit_test/test_response.py"
+    write_file(
+        tmp_path, original, "def test_status():\n    assert response.status == 200\n"
+    )
+    base = commit(tmp_path, "original test")
+    git(tmp_path, "mv", original, "tests/unit_test/test_status.py")
+    head = commit(tmp_path, "rename only")
+    reviewer = OfflineReviewer([])
+    result = run_review(request_for(tmp_path, base, head, 1), reviewer, SystemClock())
+    assert result.report.outcome == "no_findings"
+    assert result.report.unit_test_cases == []
+    assert reviewer.inputs == []
+
+
+def test_without_contract_source_the_review_stays_incomplete(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    write_file(tmp_path, "README.md", "Baseline.\n")
+    base = commit(tmp_path, "base")
+    write_file(
+        tmp_path,
+        "tests/unit_test/test_output.py",
+        "def test_output(unresolved_fixture):\n    assert unresolved_fixture()\n",
+    )
+    head = commit(tmp_path, "test via a fixture")
+    reviewer = OfflineReviewer([])
+    result = run_review(request_for(tmp_path, base, head, 1), reviewer, SystemClock())
+    assert result.report.outcome == "incomplete"
+    assert "No contract source" in result.report.incomplete_reason
+    assert reviewer.inputs == []
+
+
+def test_fixture_only_edit_is_reported_as_unreviewed(tmp_path: Path) -> None:
+    git(tmp_path, "init", "-q")
+    file_path = "tests/unit_test/test_output.py"
+    original = (
+        "import pytest\n\n"
+        "@pytest.fixture\ndef default_voice():\n    return 'first'\n\n"
+        "def test_output(default_voice):\n    assert default_voice\n"
+    )
+    write_file(tmp_path, file_path, original)
+    base = commit(tmp_path, "base")
+    write_file(tmp_path, file_path, original.replace("'first'", "'second'"))
+    head = commit(tmp_path, "fixture edit")
+    reviewer = OfflineReviewer([])
+    result = run_review(request_for(tmp_path, base, head, 1), reviewer, SystemClock())
+    assert result.report.outcome == "incomplete"
+    assert (
+        f"{file_path}: test module changed outside" in result.report.incomplete_reason
+    )
+    assert reviewer.inputs == []

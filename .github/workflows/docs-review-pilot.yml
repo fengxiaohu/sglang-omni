@@ -7,6 +7,16 @@ on:
         description: Pull request number to review
         required: true
         type: string
+      review_scope:
+        description: Choose documentation or changed Python unit-test contracts
+        type: choice
+        default: docs
+        options:
+          - docs
+          - unit_tests
+      unit_test_context_paths:
+        description: Optional source, docs, or test evidence paths, one per line
+        type: string
       offline:
         description: Run collection only without a model call
         required: true
@@ -24,6 +34,7 @@ on:
         type: boolean
 
 permissions:
+  checks: read
   contents: write
   pull-requests: read
 
@@ -33,7 +44,11 @@ concurrency:
 
 jobs:
   review:
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: >-
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      || (vars.UNIT_TEST_REVIEW_PILOT_REF != ''
+          && github.ref == vars.UNIT_TEST_REVIEW_PILOT_REF
+          && inputs.review_scope == 'unit_tests')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -51,13 +66,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
+          REVIEW_SCOPE: ${{ inputs.review_scope }}
+          UNIT_TEST_CONTEXT_PATHS: ${{ inputs.unit_test_context_paths }}
           OFFLINE_REVIEW: ${{ inputs.offline }}
           FOLLOW_UP: ${{ inputs.follow_up }}
           INCLUDE_PR_BODY: ${{ inputs.include_pr_body }}
           DOCS_REVIEW_MODEL: ${{ vars.DOCS_REVIEW_MODEL }}
           DOCS_REVIEW_BUDGET: ${{ vars.DOCS_REVIEW_BUDGET }}
           DOCS_REVIEW_API_KEY: ${{ secrets.TEST1 }}
-          DOCS_REVIEW_REPORT_KEY: ${{ secrets.DOCS_REVIEW_REPORT_KEY }}
+          DOCS_REVIEW_REPORT_KEY: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+            && secrets.UNIT_TEST_REVIEW_PILOT_REPORT_KEY || secrets.DOCS_REVIEW_REPORT_KEY }}
         run: python -m scripts.docs_review.github_pilot
       - name: Upload encrypted report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

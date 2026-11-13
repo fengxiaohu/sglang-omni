@@ -8,6 +8,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -33,7 +34,9 @@ from scripts.docs_review.models import (
 )
 from scripts.docs_review.policy import KNOWN_RULE_IDS, read_prompt
 from scripts.docs_review.reporting import render_bundle
+from scripts.docs_review.snapshot import citation_matches
 from scripts.docs_review.transport import OpenAICompatibleReviewer, ReviewerError
+from scripts.docs_review.unit_tests import validate_unit_test_findings
 
 
 class SystemClock:
@@ -58,7 +61,7 @@ def run_review(
     else:
         pass
     bundle = collect_review_bundle(request)
-    prompt_text = read_prompt()
+    prompt_text = read_prompt(request.review_scope)
     prompt_version = hashlib.sha256(prompt_text.encode()).hexdigest()
     input_hash = review_input_sha256(bundle, request.model_settings, prompt_version)
     payload = bundle_payload(bundle, prompt_version, input_hash)
@@ -94,6 +97,18 @@ def review_uncached(
     input_hash: str,
     ledger: ReviewLedger,
 ) -> Report:
+    if not bundle.needs_model:
+        return assemble_report(
+            bundle=bundle,
+            prompt_version=prompt_version,
+            input_hash=input_hash,
+            model_findings=None,
+            model_failed=False,
+            incomplete_reason="",
+            usage_cost_cents=0,
+        )
+    else:
+        pass
     reviewed_at = clock.now()
     if reviewer is None and request.model_settings is None:
         return assemble_report(
@@ -238,27 +253,27 @@ def assemble_report(
     incomplete_reason: str,
     usage_cost_cents: int,
 ) -> Report:
-    deterministic = audit_bundle(bundle)
-    combined = list(deterministic)
-    if model_findings is None:
-        pass
+    coverage_limitations = bundle.coverage_limitations
+    if bundle.review_scope == "unit_tests":
+        kept, pre_existing, dropped_citations, evidence_limitations = (
+            validate_unit_test_findings(model_findings or [], bundle)
+        )
+        dropped_absence = 0
+        coverage_limitations.extend(evidence_limitations)
     else:
-        combined.extend(model_findings)
-    kept, pre_existing, dropped_citations, dropped_absence = validate_findings(
-        combined, bundle
-    )
+        combined = [*audit_bundle(bundle), *(model_findings or [])]
+        kept, pre_existing, dropped_citations, dropped_absence = validate_findings(
+            combined, bundle
+        )
     check_results = interpret_checks(bundle.checks, bundle.head_commit_sha)
-    coverage_limitations = [
-        f"{collected.file_path}: {'missing' if collected.missing else 'truncated'}"
-        for collected in bundle.files
-        if collected.missing or collected.truncated
-    ]
     if coverage_limitations:
         incomplete_reason = "; ".join(
             filter(None, [incomplete_reason, *coverage_limitations])
         )
     else:
         pass
+    execution: Literal["complete", "incomplete"]
+    outcome: Literal["findings", "no_findings", "incomplete"]
     if model_failed or coverage_limitations:
         execution = "incomplete"
         outcome = "incomplete"
@@ -291,6 +306,8 @@ def assemble_report(
         dropped_unsupported_absence_count=dropped_absence,
         document_scopes=list(bundle.document_scopes),
         coverage_limitations=coverage_limitations,
+        review_scope=bundle.review_scope,
+        unit_test_cases=list(bundle.unit_test_cases),
     )
 
 
@@ -341,26 +358,6 @@ def validate_findings(
             else:
                 kept.append(accepted)
     return kept, pre_existing, dropped_citations, dropped_absence
-
-
-def citation_matches(
-    bundle: ReviewBundle, file_path: str, line_start: int, line_end: int, quote: str
-) -> bool:
-    if quote == "":
-        return False
-    else:
-        pass
-    for collected in bundle.files:
-        if collected.file_path == file_path:
-            lines = collected.content.splitlines()
-            if line_start < 1 or line_end > len(lines) or line_end < line_start:
-                return False
-            else:
-                excerpt = "\n".join(lines[line_start - 1 : line_end])
-                return quote in excerpt
-        else:
-            pass
-    return False
 
 
 def parameter_defined(bundle: ReviewBundle, parameter_name: str) -> bool:

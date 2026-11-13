@@ -5,7 +5,13 @@ from __future__ import annotations
 
 import json
 
-from scripts.docs_review.models import CheckView, Finding, Report, ReviewBundle
+from scripts.docs_review.models import (
+    CheckView,
+    Finding,
+    Report,
+    ReviewBundle,
+    ReviewScope,
+)
 
 
 def render_bundle(bundle: ReviewBundle) -> str:
@@ -31,6 +37,18 @@ def render_bundle(bundle: ReviewBundle) -> str:
             sort_keys=True,
         ),
     ]
+    if bundle.review_scope == "unit_tests":
+        parts.extend(
+            [
+                "Changed test cases and head line ranges:",
+                json.dumps(
+                    [case.model_dump(mode="json") for case in bundle.unit_test_cases],
+                    sort_keys=True,
+                ),
+            ]
+        )
+    else:
+        pass
     for collected in bundle.files:
         parts.append(
             f"File {collected.file_path} change {collected.change} truncated={collected.truncated} missing={collected.missing}"
@@ -43,8 +61,13 @@ def render_bundle(bundle: ReviewBundle) -> str:
 
 
 def render_markdown(report: Report) -> str:
+    title = (
+        "Unit-test contract review"
+        if report.review_scope == "unit_tests"
+        else "Documentation review"
+    )
     lines = [
-        "# Documentation review",
+        f"# {title}",
         "",
         "This report is advisory. It does not approve, merge, or close the pull request.",
         "",
@@ -62,13 +85,22 @@ def render_markdown(report: Report) -> str:
             lines.append(f"- `{file_path}`")
     else:
         lines.append("- None.")
-    lines.extend(["", "## Document types and applied rules", ""])
-    for scope in report.document_scopes:
-        types = ", ".join(document_type.value for document_type in scope.document_types)
-        rules = ", ".join(scope.rule_ids)
-        lines.append(
-            f"- `{scope.file_path}`: {types} ({scope.classification_basis}). Rules: {rules}."
-        )
+    if report.review_scope == "unit_tests":
+        lines.extend(["", "## Changed test cases", ""])
+        for case in report.unit_test_cases:
+            lines.append(
+                f"- `{case.file_path}`:{case.line_start}-{case.line_end} `{case.name}`"
+            )
+    else:
+        lines.extend(["", "## Document types and applied rules", ""])
+        for scope in report.document_scopes:
+            types = ", ".join(
+                document_type.value for document_type in scope.document_types
+            )
+            rules = ", ".join(scope.rule_ids)
+            lines.append(
+                f"- `{scope.file_path}`: {types} ({scope.classification_basis}). Rules: {rules}."
+            )
     if report.coverage_limitations:
         lines.extend(["", "## Coverage limitations", "", *report.coverage_limitations])
     else:
@@ -89,9 +121,11 @@ def render_markdown(report: Report) -> str:
         lines.append("")
     else:
         pass
-    lines.extend(format_finding_section(report.findings))
+    lines.extend(format_finding_section(report.findings, report.review_scope))
     lines.extend(["", "## Pre-existing", ""])
-    lines.extend(format_finding_section(report.pre_existing_findings))
+    lines.extend(
+        format_finding_section(report.pre_existing_findings, report.review_scope)
+    )
     if (
         report.execution == "complete"
         and not report.findings
@@ -123,7 +157,9 @@ def format_check(check: CheckView) -> str:
     )
 
 
-def format_finding_section(findings: list[Finding]) -> list[str]:
+def format_finding_section(
+    findings: list[Finding], review_scope: ReviewScope = "docs"
+) -> list[str]:
     if not findings:
         return ["None."]
     else:
@@ -133,9 +169,26 @@ def format_finding_section(findings: list[Finding]) -> list[str]:
                 f"- `{finding.rule_id}` ({finding.certainty}, {finding.change_relation}) "
                 f"`{finding.file_path}`:{finding.line_start}: {finding.claim}"
             )
-            lines.append(
-                f"  Evidence: `{finding.evidence_file_path}` `{finding.evidence_quote}`"
-            )
+            if review_scope == "unit_tests":
+                lines.append(
+                    f"  Contract evidence: `{finding.evidence_file_path}`:"
+                    f"{finding.evidence_line_start}-{finding.evidence_line_end} "
+                    f"`{finding.evidence_quote}`"
+                )
+                lines.append(f"  Public contract: {finding.public_contract}")
+                lines.append(f"  Regression: {finding.regression}")
+                if finding.duplicate_test is not None:
+                    duplicate = finding.duplicate_test
+                    lines.append(
+                        f"  Covering test: `{duplicate.file_path}`:{duplicate.line_start} "
+                        f"`{duplicate.quote}`"
+                    )
+                else:
+                    pass
+            else:
+                lines.append(
+                    f"  Evidence: `{finding.evidence_file_path}` `{finding.evidence_quote}`"
+                )
             lines.append(f"  Impact: {finding.impact}")
             lines.append(f"  Fix: {finding.suggested_fix}")
         return lines

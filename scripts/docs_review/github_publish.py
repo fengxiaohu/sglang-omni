@@ -16,7 +16,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, Field, ValidationError
 
 from scripts.docs_review.github_pilot import PilotError, fetch_pull_request, github_api
-from scripts.docs_review.models import Finding, Report
+from scripts.docs_review.models import Finding, Report, ReviewScope
 
 
 class WorkflowRun(BaseModel):
@@ -43,19 +43,51 @@ def safe_text(value: str) -> str:
     return escaped
 
 
-def format_finding(repository_name: str, head_sha: str, finding: Finding) -> str:
-    document_path = quote(finding.file_path, safe="/")
+def format_finding(
+    repository_name: str,
+    head_sha: str,
+    finding: Finding,
+    review_scope: ReviewScope = "docs",
+) -> str:
+    subject_path = quote(finding.file_path, safe="/")
     evidence_path = quote(finding.evidence_file_path, safe="/")
     repository_url = f"https://github.com/{repository_name}/blob/{head_sha}"
-    return "\n".join(
+    subject_label = "Test" if review_scope == "unit_tests" else "Document"
+    claim = safe_text(finding.claim)
+    if review_scope == "docs":
+        claim = f"claim under review: {claim}"
+    else:
+        pass
+    lines = [
+        f"- **{safe_text(finding.rule_id)}** — {claim}",
+        f"  - {subject_label}: [{safe_text(finding.file_path)}:{finding.line_start}]({repository_url}/{subject_path}#L{finding.line_start})",
+        f"  - Evidence: [{safe_text(finding.evidence_file_path)}:{finding.evidence_line_start}]({repository_url}/{evidence_path}#L{finding.evidence_line_start}) — {safe_text(finding.evidence_quote)}",
+    ]
+    if review_scope == "unit_tests":
+        lines.extend(
+            [
+                f"  - Public contract: {safe_text(finding.public_contract)}",
+                f"  - Regression: {safe_text(finding.regression)}",
+            ]
+        )
+        if finding.duplicate_test is not None:
+            duplicate = finding.duplicate_test
+            duplicate_path = quote(duplicate.file_path, safe="/")
+            lines.append(
+                f"  - Covering test: [{safe_text(duplicate.file_path)}:{duplicate.line_start}]"
+                f"({repository_url}/{duplicate_path}#L{duplicate.line_start})"
+            )
+        else:
+            pass
+    else:
+        pass
+    lines.extend(
         [
-            f"- **{safe_text(finding.rule_id)}** — claim under review: {safe_text(finding.claim)}",
-            f"  - Document: [{safe_text(finding.file_path)}:{finding.line_start}]({repository_url}/{document_path}#L{finding.line_start})",
-            f"  - Evidence: [{safe_text(finding.evidence_file_path)}:{finding.evidence_line_start}]({repository_url}/{evidence_path}#L{finding.evidence_line_start}) — {safe_text(finding.evidence_quote)}",
             f"  - Impact: {safe_text(finding.impact)}",
             f"  - Suggested fix: {safe_text(finding.suggested_fix)}",
         ]
     )
+    return "\n".join(lines)
 
 
 def selected_findings(report: Report, selection: str) -> list[Finding]:
@@ -140,11 +172,20 @@ def publish_selected_findings() -> None:
         pass
     body = "\n\n".join(
         [
-            "### Advisory documentation review",
+            (
+                "### Advisory unit-test contract review"
+                if report.review_scope == "unit_tests"
+                else "### Advisory documentation review"
+            ),
             f"Maintainer-selected findings for commit `{report.head_commit_sha}`. "
             "They apply only to this exact revision; check the current head before acting.",
             *[
-                format_finding(repository_name, report.head_commit_sha, finding)
+                format_finding(
+                    repository_name,
+                    report.head_commit_sha,
+                    finding,
+                    report.review_scope,
+                )
                 for finding in findings
             ],
             f"Review run: https://github.com/{repository_name}/actions/runs/{run_id}",

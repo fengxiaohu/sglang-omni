@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Run an authorized GitHub documentation review without executing PR code."""
+"""Run an authorized GitHub review from frozen pull request revisions."""
 
 from __future__ import annotations
 
@@ -19,7 +19,15 @@ from cryptography.fernet import Fernet
 from pydantic import BaseModel, Field, ValidationError
 
 from scripts.docs_review.collect import collect_review_bundle, review_input_sha256
-from scripts.docs_review.models import BudgetConfig, ModelSettings, ReviewRequest
+from scripts.docs_review.models import (
+    BudgetConfig,
+    CheckFreshness,
+    CheckRecord,
+    CheckStatus,
+    ModelSettings,
+    ReviewRequest,
+    ReviewScope,
+)
 from scripts.docs_review.policy import read_prompt
 from scripts.docs_review.reporting import render_bundle, render_markdown
 from scripts.docs_review.review import SystemClock, run_review
@@ -43,6 +51,59 @@ class PullRequest(BaseModel):
     body: str | None
     base: Revision
     head: Revision
+
+
+class GitHubCheckRun(BaseModel):
+    name: str
+    head_sha: str
+    status: str
+    conclusion: str | None
+
+
+class GitHubCheckRuns(BaseModel):
+    check_runs: list[GitHubCheckRun]
+
+
+GITHUB_CHECK_STATUSES = {
+    "success": CheckStatus.PASSED,
+    "failure": CheckStatus.FAILED,
+    "skipped": CheckStatus.SKIPPED,
+    "cancelled": CheckStatus.CANCELLED,
+    "timed_out": CheckStatus.TIMED_OUT,
+}
+
+
+def fetch_unit_test_checks(
+    repository_name: str, head_commit_sha: str
+) -> list[CheckRecord]:
+    try:
+        response = github_api(
+            f"repos/{repository_name}/commits/{head_commit_sha}/check-runs?per_page=100"
+        )
+        checks = GitHubCheckRuns.model_validate_json(response).check_runs
+    except (PilotError, ValidationError):
+        return []
+    else:
+        return [
+            CheckRecord(
+                name=check.name,
+                status=(
+                    GITHUB_CHECK_STATUSES.get(
+                        check.conclusion or "", CheckStatus.UNKNOWN
+                    )
+                    if check.status == "completed"
+                    else CheckStatus.PENDING
+                ),
+                freshness=(
+                    CheckFreshness.CURRENT
+                    if check.head_sha == head_commit_sha
+                    else CheckFreshness.STALE
+                ),
+                execution_commit_sha=check.head_sha,
+                coverage="GitHub check summary. Per-test coverage is unknown.",
+            )
+            for check in checks
+        ]
 
 
 class Reservation(BaseModel):
@@ -266,6 +327,13 @@ def run_github_review() -> None:
     output_directory.mkdir(parents=True, exist_ok=True)
     report_key = os.environ["DOCS_REVIEW_REPORT_KEY"].encode()
     cipher = Fernet(report_key)
+    scope_value = os.environ.get("REVIEW_SCOPE") or "docs"
+    if scope_value == "unit_tests":
+        review_scope: ReviewScope = "unit_tests"
+    elif scope_value == "docs":
+        review_scope = "docs"
+    else:
+        raise PilotError("Unknown review scope")
     offline = os.environ["OFFLINE_REVIEW"] == "true"
     if offline:
         model_settings = None
@@ -294,21 +362,36 @@ def run_github_review() -> None:
         model_settings=model_settings,
         budget=budget,
         ledger_path=output_directory / "local.sqlite",
+        review_scope=review_scope,
+        include_paths=os.environ.get("UNIT_TEST_CONTEXT_PATHS", "").splitlines(),
+        checks=(
+            fetch_unit_test_checks(repository_name, pull_request.head.sha)
+            if review_scope == "unit_tests"
+            else []
+        ),
     )
     bundle = collect_review_bundle(request)
-    if not bundle.reviewed_paths:
+    if review_scope == "docs" and not bundle.reviewed_paths:
         raise PilotError("No changed documentation files were found")
-    elif len(render_bundle(bundle).encode()) > MAX_INPUT_BYTES:
-        raise PilotError("Review input exceeds the configured byte limit")
+    elif bundle.needs_model and len(render_bundle(bundle).encode()) > MAX_INPUT_BYTES:
+        if review_scope == "unit_tests":
+            request.collection_limitations.append(
+                "Review input exceeds the configured byte limit. Select a smaller PR or fewer context files."
+            )
+            bundle = collect_review_bundle(request)
+        else:
+            raise PilotError("Review input exceeds the configured byte limit")
     else:
         pass
-    if offline:
-        pass
+    if offline or not bundle.needs_model:
+        reservation = None
     else:
         if budget is None:
             raise PilotError("The review budget is not configured")
         else:
-            prompt_version = hashlib.sha256(read_prompt().encode()).hexdigest()
+            prompt_version = hashlib.sha256(
+                read_prompt(review_scope).encode()
+            ).hexdigest()
             input_hash = review_input_sha256(bundle, model_settings, prompt_version)
             reservation = Reservation(
                 pull_request_number=pull_request_number,
@@ -342,17 +425,26 @@ def run_github_review() -> None:
     }
     encrypted = cipher.encrypt(json.dumps(private_report).encode())
     (output_directory / "report.fernet").write_bytes(encrypted)
-    if offline:
-        pass
-    else:
+    if reservation is not None:
         finish_reservation(repository_name, reservation, result.report.execution)
+    else:
+        pass
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
         output.write(f"execution={result.report.execution}\n")
         output.write(f"stale={str(stale).lower()}\n")
-    print(
-        f"Advisory review: {result.report.execution}, "
-        f"stale={str(stale).lower()}; encrypted report saved."
-    )
+    if review_scope == "unit_tests":
+        print(
+            f"Unit-test review: {result.report.execution}, {result.report.outcome}, "
+            f"cases={len(result.report.unit_test_cases)}, "
+            f"findings={len(result.report.findings)}, "
+            f"dropped={result.report.dropped_citation_count}, "
+            f"stale={str(stale).lower()}; encrypted report saved."
+        )
+    else:
+        print(
+            f"Advisory review: {result.report.execution}, "
+            f"stale={str(stale).lower()}; encrypted report saved."
+        )
 
 
 def main() -> int:
@@ -363,7 +455,7 @@ def main() -> int:
         return 1
     except (KeyError, ValueError, OSError, RuntimeError, ValidationError):
         print(
-            "Documentation review could not run; check configuration and permissions.",
+            "Advisory review could not run; check configuration and permissions.",
             file=sys.stderr,
         )
         return 1
