@@ -25,6 +25,7 @@ from scripts.docs_review.snapshot import (
 UNIT_TEST_POLICY_VERSION = "unit-tests-2"
 UNIT_TEST_ROOT = "tests/unit_test/"
 AUTOMATIC_CONTEXT_BYTES = 36_000
+EXPLICIT_CONTEXT_BYTES = 16_000
 CONTRACT_MODULES = {"sglang_omni", "sglang_omni_router", "sglang_omni_mlx", "examples"}
 CONTEXT_SUFFIXES = {
     ".py",
@@ -300,7 +301,9 @@ def collect_unit_test_inputs(
                 truncated=truncated,
                 change="included",
             )
-    remaining_context_bytes = AUTOMATIC_CONTEXT_BYTES
+    remaining_context_bytes = (
+        EXPLICIT_CONTEXT_BYTES if include_paths else AUTOMATIC_CONTEXT_BYTES
+    )
     for module in dict.fromkeys(contract_modules):
         module_path = module.replace(".", "/")
         for file_path in (f"{module_path}.py", f"{module_path}/__init__.py"):

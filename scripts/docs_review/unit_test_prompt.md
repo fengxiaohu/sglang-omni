@@ -4,7 +4,7 @@ Test the public contract. Find the supported entry point, the input, and the res
 
 Review the supplied changed test cases only. Use previous_source to compare modified cases with their prior assertions. Use undetermined when the relationship cannot be established. Use the surrounding tests and cited production code or documentation as evidence. Report only actionable findings. UNIT_TEST_INTERNAL_ASSERTION covers cases that only pin a helper call or internal representation, or bypass the caller path whose behavior needs protection. UNIT_TEST_SELF_DERIVED_EXPECTATION covers an expected value computed using the same production logic exercised by the test. UNIT_TEST_DUPLICATE requires the same input and observable assertion already covered by another cited test. Shared coverage of code lines alone is insufficient.
 
-Return only a JSON array. Each actionable entry must contain:
+Return only a compact JSON array. Use at most one high-confidence, actionable finding per test case. Keep the claim, public_contract, regression, impact, and suggested_fix to one sentence each. Each actionable entry must contain:
 
 - rule_id, file_path, line_start, line_end, quote, and claim
 - evidence_file_path, evidence_line_start, evidence_line_end, and evidence_quote
