@@ -190,7 +190,7 @@ def review_uncached(
             usage_cost_cents=usage_cost_cents,
         )
     else:
-        parsed = parse_model_findings(raw_output, bundle.review_scope)
+        parsed, parse_error = parse_model_findings(raw_output, bundle.review_scope)
         if parsed is None:
             report = assemble_report(
                 bundle=bundle,
@@ -198,7 +198,7 @@ def review_uncached(
                 input_hash=input_hash,
                 model_findings=None,
                 model_failed=True,
-                incomplete_reason="model output was not a finding list",
+                incomplete_reason=parse_error,
                 usage_cost_cents=usage_cost_cents,
             )
         else:
@@ -235,8 +235,8 @@ def call_with_retries(
 
 
 def parse_model_findings(
-    raw: str, review_scope: ReviewScope = "docs"
-) -> list[Finding] | None:
+    raw: str, review_scope: ReviewScope
+) -> tuple[list[Finding] | None, str]:
     if review_scope == "unit_tests":
         raw = raw.strip()
         if raw.startswith(("```json\n", "```\n")) and raw.endswith("\n```"):
@@ -247,8 +247,11 @@ def parse_model_findings(
         pass
     try:
         payload: object = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+    except json.JSONDecodeError as error:
+        return (
+            None,
+            f"Model output was not valid JSON at line {error.lineno}, column {error.colno}.",
+        )
     else:
         pass
     if (
@@ -260,18 +263,29 @@ def parse_model_findings(
     else:
         pass
     if not isinstance(payload, list):
-        return None
+        return None, "Model output did not contain a findings array."
     else:
         findings: list[Finding] = []
-        for entry in payload:
-            if not isinstance(entry, dict):
-                return None
-            else:
-                try:
-                    findings.append(Finding.model_validate(entry))
-                except ValidationError:
-                    return None
-        return findings
+        for index, entry in enumerate(payload, 1):
+            try:
+                findings.append(Finding.model_validate(entry))
+            except ValidationError as error:
+                issues = error.errors(
+                    include_input=False, include_context=False, include_url=False
+                )
+                fields = ", ".join(
+                    (
+                        f"{issue['loc'][0]} ({issue['type']})"
+                        if issue["loc"]
+                        else issue["type"]
+                    )
+                    for issue in issues
+                )
+                return (
+                    None,
+                    f"Model finding {index} failed schema validation for {fields}.",
+                )
+        return findings, ""
 
 
 def assemble_report(
