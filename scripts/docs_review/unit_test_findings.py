@@ -110,45 +110,70 @@ def resolve_unit_test_citation(
         return locate_unit_test_citation(bundle, citation.file_path, citation.quote)
 
 
-def fill_missing_citation_lines(
+def complete_citation_payload(
     bundle: ReviewBundle, citation_payload: dict[str, object], prefix: str
 ) -> None:
     start_field = f"{prefix}line_start"
     end_field = f"{prefix}line_end"
+    quote_field = f"{prefix}quote"
     file_path = citation_payload.get(f"{prefix}file_path")
-    quote = citation_payload.get(f"{prefix}quote")
-    if (
-        (
-            citation_payload.get(start_field) is not None
-            and citation_payload.get(end_field) is not None
-        )
-        or not isinstance(file_path, str)
-        or not isinstance(quote, str)
-    ):
+    quote = citation_payload.get(quote_field)
+    start = citation_payload.get(start_field)
+    end = citation_payload.get(end_field)
+    if not isinstance(file_path, str):
         return
-    else:
+    elif isinstance(quote, str) and quote.strip():
+        if start is not None and end is not None:
+            return
+        else:
+            pass
         citation = locate_unit_test_citation(bundle, file_path, quote)
         if citation is not None:
             citation_payload[start_field] = citation.line_start
             citation_payload[end_field] = citation.line_end
         else:
             pass
+    elif (
+        type(start) is int
+        and start > 0
+        and (end is None or (type(end) is int and end == start))
+    ):
+        source = next(
+            (file.content for file in bundle.files if file.file_path == file_path), ""
+        )
+        lines = source.splitlines()
+        if start <= len(lines) and lines[start - 1].strip():
+            citation_payload[end_field] = start
+            citation_payload[quote_field] = lines[start - 1]
+        else:
+            pass
+    else:
+        pass
 
 
-def fill_unit_test_finding_lines(
+def normalize_unit_test_citations(
     bundle: ReviewBundle, finding_payload: dict[str, object]
 ) -> None:
-    fill_missing_citation_lines(bundle, finding_payload, "")
+    complete_citation_payload(bundle, finding_payload, "")
     if finding_payload.get("rule_id") == INSUFFICIENT_EVIDENCE:
         finding_payload["evidence_file_path"] = finding_payload.get("file_path")
         finding_payload["evidence_line_start"] = finding_payload.get("line_start")
         finding_payload["evidence_line_end"] = finding_payload.get("line_end")
         finding_payload["evidence_quote"] = ""
     else:
-        fill_missing_citation_lines(bundle, finding_payload, "evidence_")
+        evidence = finding_payload.get("evidence")
+        if isinstance(evidence, dict):
+            for field in ("file_path", "line_start", "line_end", "quote"):
+                if field in evidence:
+                    finding_payload.setdefault(f"evidence_{field}", evidence[field])
+                else:
+                    pass
+        else:
+            pass
+        complete_citation_payload(bundle, finding_payload, "evidence_")
     covering_test = finding_payload.get("duplicate_test")
     if isinstance(covering_test, dict):
-        fill_missing_citation_lines(bundle, covering_test, "")
+        complete_citation_payload(bundle, covering_test, "")
     else:
         pass
 

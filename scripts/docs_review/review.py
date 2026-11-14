@@ -42,7 +42,7 @@ from scripts.docs_review.transport import (
     ReviewerError,
 )
 from scripts.docs_review.unit_test_findings import (
-    fill_unit_test_finding_lines,
+    normalize_unit_test_citations,
     validate_unit_test_findings,
 )
 
@@ -270,7 +270,7 @@ def parse_model_findings(
         findings: list[Finding] = []
         for index, entry in enumerate(payload, 1):
             if bundle.review_scope == "unit_tests" and isinstance(entry, dict):
-                fill_unit_test_finding_lines(bundle, entry)
+                normalize_unit_test_citations(bundle, entry)
             else:
                 pass
             try:

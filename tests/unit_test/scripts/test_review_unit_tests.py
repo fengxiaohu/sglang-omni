@@ -351,17 +351,19 @@ def test_fixture_only_edit_is_reported_as_unreviewed(tmp_path: Path) -> None:
     assert reviewer.inputs == []
 
 
-@pytest.mark.parametrize("unique_contract_quote", [True, False])
-def test_resolves_a_model_quote_with_no_reported_source_lines(
+@pytest.mark.parametrize(
+    "citation_shape", ["flat", "nested", "line", "ambiguous", "out_of_bounds"]
+)
+def test_resolves_a_model_citation_without_lines_or_quote(
     tmp_path: Path,
     historical_cases: list[HistoricalCase],
-    unique_contract_quote: bool,
+    citation_shape: str,
 ) -> None:
     case = historical_cases[0]
     contract_quote = (
         "Takes the same arguments as `sgl-omni serve`, including dotted overrides"
     )
-    if not unique_contract_quote:
+    if citation_shape == "ambiguous":
         case = case.model_copy(
             update={"contract_source": case.contract_source + f"\n# {contract_quote}\n"}
         )
@@ -369,28 +371,40 @@ def test_resolves_a_model_quote_with_no_reported_source_lines(
         pass
     base_commit, before_commit, _ = historical_revisions(tmp_path, case)
     test_quote = "expected = manager.merge_config(manager.parse_extra_args(argv))"
-    response = json.dumps(
-        {
-            "findings": [
-                {
-                    "rule_id": "UNIT_TEST_SELF_DERIVED_EXPECTATION",
-                    "file_path": case.test_path,
-                    "line_start": 169,
-                    "line_end": 171,
-                    "quote": test_quote,
-                    "evidence_file_path": case.contract_path,
-                    "evidence_quote": contract_quote,
-                    "claim": "The expected YAML is computed by the same resolver.",
-                    "public_contract": "The CLI emits the requested stage override.",
-                    "regression": "A dropped override leaves the default in stdout.",
-                    "impact": "The preview gives the caller an incorrect configuration.",
-                    "suggested_fix": "Assert the emitted stage memory fraction equals 0.35.",
-                    "change_relation": "introduced",
-                    "certainty": "supported",
-                }
-            ]
+    payload: dict[str, object] = {
+        "rule_id": "UNIT_TEST_SELF_DERIVED_EXPECTATION",
+        "file_path": case.test_path,
+        "line_start": 169,
+        "line_end": 171,
+        "quote": test_quote,
+        "claim": "The expected YAML is computed by the same resolver.",
+        "public_contract": "The CLI emits the requested stage override.",
+        "regression": "A dropped override leaves the default in stdout.",
+        "impact": "The preview gives the caller an incorrect configuration.",
+        "suggested_fix": "Assert the emitted stage memory fraction equals 0.35.",
+        "change_relation": "introduced",
+        "certainty": "supported",
+    }
+    if citation_shape == "nested":
+        payload["evidence"] = {"file_path": case.contract_path, "quote": contract_quote}
+    elif citation_shape == "line":
+        payload["evidence"] = {
+            "file_path": case.contract_path,
+            "line_start": next(
+                number
+                for number, line in enumerate(case.contract_source.splitlines(), 1)
+                if contract_quote in line
+            ),
         }
-    )
+    elif citation_shape == "out_of_bounds":
+        payload["evidence"] = {
+            "file_path": case.contract_path,
+            "line_start": len(case.contract_source.splitlines()) + 1,
+        }
+    else:
+        payload["evidence_file_path"] = case.contract_path
+        payload["evidence_quote"] = contract_quote
+    response = json.dumps({"findings": [payload]})
 
     result = run_review(
         request_for(tmp_path, base_commit, before_commit, 1),
@@ -398,7 +412,7 @@ def test_resolves_a_model_quote_with_no_reported_source_lines(
         SystemClock(),
     )
 
-    if not unique_contract_quote:
+    if citation_shape in {"ambiguous", "out_of_bounds"}:
         assert result.report.execution == "incomplete"
         assert result.report.findings == []
     else:
