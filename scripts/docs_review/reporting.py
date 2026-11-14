@@ -42,7 +42,7 @@ def render_bundle(bundle: ReviewBundle) -> str:
     return "\n".join(parts)
 
 
-def render_markdown(report: Report) -> str:
+def render_markdown(report: Report, *, number_findings: bool = False) -> str:
     lines = [
         "# Documentation review",
         "",
@@ -89,7 +89,7 @@ def render_markdown(report: Report) -> str:
         lines.append("")
     else:
         pass
-    lines.extend(format_finding_section(report.findings))
+    lines.extend(format_finding_section(report.findings, numbered=number_findings))
     lines.extend(["", "## Pre-existing", ""])
     lines.extend(format_finding_section(report.pre_existing_findings))
     if (
@@ -123,19 +123,23 @@ def format_check(check: CheckView) -> str:
     )
 
 
-def format_finding_section(findings: list[Finding]) -> list[str]:
+def format_finding_section(
+    findings: list[Finding], *, numbered: bool = False
+) -> list[str]:
     if not findings:
         return ["None."]
     else:
         lines: list[str] = []
-        for finding in findings:
+        for index, finding in enumerate(findings, 1):
+            marker = f"{index}." if numbered else "-"
+            indent = " " * (len(marker) + 1)
             lines.append(
-                f"- `{finding.rule_id}` ({finding.certainty}, {finding.change_relation}) "
+                f"{marker} `{finding.rule_id}` ({finding.certainty}, {finding.change_relation}) "
                 f"`{finding.file_path}`:{finding.line_start}: {finding.claim}"
             )
             lines.append(
-                f"  Evidence: `{finding.evidence_file_path}` `{finding.evidence_quote}`"
+                f"{indent}Evidence: `{finding.evidence_file_path}` `{finding.evidence_quote}`"
             )
-            lines.append(f"  Impact: {finding.impact}")
-            lines.append(f"  Fix: {finding.suggested_fix}")
+            lines.append(f"{indent}Impact: {finding.impact}")
+            lines.append(f"{indent}Fix: {finding.suggested_fix}")
         return lines

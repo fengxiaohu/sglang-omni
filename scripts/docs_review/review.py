@@ -8,6 +8,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -259,6 +260,8 @@ def assemble_report(
         )
     else:
         pass
+    execution: Literal["complete", "incomplete"]
+    outcome: Literal["findings", "no_findings", "incomplete"]
     if model_failed or coverage_limitations:
         execution = "incomplete"
         outcome = "incomplete"
