@@ -112,10 +112,8 @@ class TestResolve:
         expected = ConfigManager.from_file(str(config_file)).config
         assert yaml.safe_load(result.stdout) == dump_user_config(expected)
 
-    def test_dotted_arguments_are_applied_like_serve_applies_them(
-        self, runner, plain_config_file, stage
-    ):
-        argv = [f"--{stage}.engine.mem-fraction-static", "0.35"]
+    def test_resolve_memory_fraction_override(self, runner, plain_config_file, stage):
+        argv = [f"--{stage}.engine.mem_fraction_static", "0.35"]
         result = runner.invoke(
             config_app, ["resolve", "--config", str(plain_config_file), *argv]
         )
@@ -124,6 +122,18 @@ class TestResolve:
         manager = ConfigManager.from_file(str(plain_config_file))
         expected = manager.merge_config(manager.parse_extra_args(argv))
         assert yaml.safe_load(result.stdout) == dump_user_config(expected)
+
+    def test_resolve_memory_fraction_in_stdout(
+        self, runner, plain_config_file, stage
+    ) -> None:
+        arguments = [f"--{stage}.engine.mem_fraction_static", "0.35"]
+        result = runner.invoke(
+            config_app, ["resolve", "--config", str(plain_config_file), *arguments]
+        )
+
+        assert result.exit_code == 0, output_of(result)
+        configuration = yaml.safe_load(result.stdout)
+        assert configuration["stages"][stage]["engine"]["mem_fraction_static"] == 0.35
 
     def test_stdout_is_a_usable_config_file(self, runner, config_file, stage):
         """`config resolve > pipeline.yaml` must produce a loadable document
