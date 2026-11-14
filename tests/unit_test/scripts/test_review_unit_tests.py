@@ -17,6 +17,16 @@ from scripts.docs_review.review import SystemClock, run_review
 FIXTURE_PATH = (
     Path(__file__).resolve().parents[1] / "fixtures" / "unit_test_review_2874.json"
 )
+CLI_TEST_IMPORTS = (
+    "import yaml\n"
+    "from sglang_omni.config.manager import ConfigManager\n"
+    "from sglang_omni.config.sources import dump_user_config\n"
+)
+CLI_PARSER_SOURCE = (
+    "\n\nfrom sglang_omni.config.manager import ConfigManager\n\n"
+    "def resolve_sources(baseline, argv):\n"
+    "    return ConfigManager(baseline).parse_extra_args(list(argv))\n"
+)
 
 
 class HistoricalCase(BaseModel):
@@ -215,6 +225,123 @@ def test_replays_weak_and_strengthened_contract_cases(
     assert test_quote in after.payload.unit_test_cases[0].previous_source
     assert strong_assertion in after_reviewer.inputs[0]
     assert contract_quote in after_reviewer.inputs[0]
+
+
+@pytest.mark.parametrize("case_variant", ["weak", "strengthened", "different_parser"])
+def test_cli_override_review_survives_an_empty_model_response(
+    tmp_path: Path,
+    historical_cases: list[HistoricalCase],
+    case_variant: str,
+) -> None:
+    historical_case = historical_cases[0]
+    parser_source = (
+        CLI_PARSER_SOURCE.replace("parse_extra_args", "parse_args_for_preview")
+        if case_variant == "different_parser"
+        else CLI_PARSER_SOURCE
+    )
+    example = historical_case.model_copy(
+        update={
+            "before": CLI_TEST_IMPORTS
+            + historical_case.before.replace(
+                "engine.mem-fraction-static", "engine.mem_fraction_static"
+            ).replace('"0.35"', '"0.42"'),
+            "after": CLI_TEST_IMPORTS + historical_case.after.replace("0.35", "0.42"),
+            "contract_source": historical_case.contract_source + parser_source,
+        }
+    )
+    base_commit, before_commit, after_commit = historical_revisions(tmp_path, example)
+    review = run_review(
+        request_for(
+            tmp_path,
+            base_commit,
+            after_commit if case_variant == "strengthened" else before_commit,
+            1,
+        ),
+        OfflineReviewer('{"findings":[]}'),
+        SystemClock(),
+    )
+    assert review.report.execution == "complete", review.report.incomplete_reason
+    assert review.report.dropped_citation_count == 0
+    if case_variant != "weak":
+        assert review.report.outcome == "no_findings"
+        assert not review.report.findings
+    else:
+        assert review.report.outcome == "findings"
+        (finding,) = review.report.findings
+        assert finding.rule_id == "UNIT_TEST_SELF_DERIVED_EXPECTATION"
+        assert finding.file_path == example.test_path
+        assert (
+            "assert yaml.safe_load(result.stdout) == dump_user_config(expected)"
+            in finding.quote
+        )
+        assert finding.evidence_file_path == example.contract_path
+        assert "including dotted overrides" in finding.evidence_quote
+        assert "stdout" in finding.public_contract and "0.42" in finding.public_contract
+        assert "ignore" in finding.regression
+        assert (
+            '["stages"][stage]["engine"]["mem_fraction_static"] == 0.42'
+            in finding.suggested_fix
+        )
+
+
+def test_cli_override_audit_rejects_an_incorrect_duplicate(
+    tmp_path: Path, historical_cases: list[HistoricalCase]
+) -> None:
+    historical_case = historical_cases[0]
+    original = historical_case.before.replace(
+        "engine.mem-fraction-static", "engine.mem_fraction_static"
+    )
+    strengthened = historical_case.after[
+        historical_case.after.index("def test_") :
+    ].replace(historical_case.name, "test_memory_fraction_in_stdout")
+    example = historical_case.model_copy(
+        update={
+            "before": CLI_TEST_IMPORTS + original + "\n\n" + strengthened,
+            "contract_source": historical_case.contract_source + CLI_PARSER_SOURCE,
+        }
+    )
+    base_commit, head_commit, _ = historical_revisions(tmp_path, example)
+    test_quote = (
+        'assert printed["stages"][stage]["engine"]["mem_fraction_static"] == 0.35'
+    )
+    weak_quote = "assert yaml.safe_load(result.stdout) == dump_user_config(expected)"
+    contract_quote = "including dotted overrides"
+    response = json.dumps(
+        {
+            "findings": [
+                {
+                    "rule_id": "UNIT_TEST_DUPLICATE",
+                    "file_path": example.test_path,
+                    "quote": test_quote,
+                    "evidence": {
+                        "file_path": example.contract_path,
+                        "quote": contract_quote,
+                    },
+                    "duplicate_test": {
+                        "file_path": example.test_path,
+                        "quote": weak_quote,
+                    },
+                    "claim": "The original test already asserts the same result.",
+                    "public_contract": "The CLI emits the requested override.",
+                    "regression": "The CLI could ignore the override.",
+                    "impact": "The additional test is duplicate coverage.",
+                    "suggested_fix": "Remove the independent assertion.",
+                    "change_relation": "introduced",
+                    "certainty": "supported",
+                }
+            ]
+        }
+    )
+
+    result = run_review(
+        request_for(tmp_path, base_commit, head_commit, 1),
+        OfflineReviewer(response),
+        SystemClock(),
+    )
+    assert result.report.execution == "complete", result.report.incomplete_reason
+    (finding,) = result.report.findings
+    assert finding.rule_id == "UNIT_TEST_SELF_DERIVED_EXPECTATION"
+    assert weak_quote in finding.quote
 
 
 @pytest.mark.parametrize(

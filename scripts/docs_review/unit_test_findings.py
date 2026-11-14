@@ -6,6 +6,10 @@ from __future__ import annotations
 import ast
 import re
 
+from scripts.docs_review.config_resolve_audit import (
+    SELF_DERIVED_EXPECTATION,
+    audit_config_resolve,
+)
 from scripts.docs_review.models import (
     Finding,
     ReviewBundle,
@@ -24,7 +28,7 @@ from scripts.docs_review.unit_tests import (
 DUPLICATE_RULE_ID = "UNIT_TEST_DUPLICATE"
 UNIT_TEST_RULE_IDS = {
     "UNIT_TEST_INTERNAL_ASSERTION",
-    "UNIT_TEST_SELF_DERIVED_EXPECTATION",
+    SELF_DERIVED_EXPECTATION,
     DUPLICATE_RULE_ID,
 }
 INSUFFICIENT_EVIDENCE = "UNIT_TEST_INSUFFICIENT_EVIDENCE"
@@ -219,7 +223,7 @@ def covers_other_test(
 
 
 def validate_unit_test_findings(
-    findings: list[Finding], bundle: ReviewBundle
+    findings: list[Finding], bundle: ReviewBundle, *, check_contracts: bool
 ) -> tuple[list[Finding], list[Finding], int, list[str]]:
     accepted: list[Finding] = []
     pre_existing: list[Finding] = []
@@ -231,7 +235,11 @@ def validate_unit_test_findings(
         if is_context_path(file.file_path)
         and not file.file_path.startswith(UNIT_TEST_ROOT)
     }
-    for index, finding in enumerate(findings, 1):
+    local_findings, independent_assertions = (
+        audit_config_resolve(bundle) if check_contracts else ({}, set())
+    )
+    candidates = [*local_findings.values(), *findings]
+    for index, finding in enumerate(candidates, 1):
         test_citation = resolve_unit_test_citation(
             bundle,
             SourceCitation(
@@ -276,6 +284,34 @@ def validate_unit_test_findings(
             if finding.duplicate_test is not None
             else None
         )
+        if index > len(local_findings) and case is not None:
+            case_identity = (case.file_path, case.name)
+            if finding.rule_id in {
+                SELF_DERIVED_EXPECTATION,
+                INSUFFICIENT_EVIDENCE,
+            } and (
+                case_identity in local_findings
+                or (
+                    finding.rule_id == SELF_DERIVED_EXPECTATION
+                    and case_identity in independent_assertions
+                )
+            ):
+                continue
+            elif (
+                finding.rule_id == DUPLICATE_RULE_ID
+                and duplicate is not None
+                and any(
+                    local_finding.file_path == duplicate.file_path
+                    and local_finding.line_start <= duplicate.line_start
+                    and duplicate.line_end <= local_finding.line_end
+                    for local_finding in local_findings.values()
+                )
+            ):
+                continue
+            else:
+                pass
+        else:
+            pass
         if test_citation is None or case is None:
             rejection = "test citation does not match a changed case"
         elif (

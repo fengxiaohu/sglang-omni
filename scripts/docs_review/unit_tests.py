@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 from scripts.docs_review.models import CollectedFile, UnitTestCase
 from scripts.docs_review.snapshot import clip_content, git_show, require_git
 
-UNIT_TEST_POLICY_VERSION = "unit-tests-3"
+UNIT_TEST_POLICY_VERSION = "unit-tests-4"
 UNIT_TEST_ROOT = "tests/unit_test/"
 AUTOMATIC_CONTEXT_BYTES = 36_000
 EXPLICIT_CONTEXT_BYTES = 16_000

@@ -68,6 +68,12 @@ the pull request changes during publication. Findings remain advisory.
 
 Choose `review_scope=unit_tests` to review added and edited Python test cases under `tests/unit_test/`. The report uses the test and its caller-visible contract to identify a concrete regression, show the relevant lines, and propose an assertion that would catch it. A duplicate finding must also cite the other test. Missing contract evidence leaves the review incomplete.
 
+During a model-backed review, a source check can report a weak `config resolve`
+test even when the model returns no findings. It checks whether the CLI and the
+test's expected YAML share the parser for a dotted stage memory override. An
+independent assertion on the emitted value covers that regression. The source
+check uses frozen revisions and its findings go through the same citation checks.
+
 The collector reads fixed Git revisions and selects direct edits to test functions and their own decorators. Edits confined to shared fixtures, imports, or class and module settings do not select a test by themselves. The rest of the changed file and imports referenced by the selected cases provide context. Use `unit_test_context_paths` to select additional source files, docs, or neighboring tests, one path per line. The report shows existing GitHub check summaries for the reviewed head where available. Check results provide context for the review. The workflow never runs the PR's tests.
 
 Run locally with the same model and budget options as the documentation reviewer:

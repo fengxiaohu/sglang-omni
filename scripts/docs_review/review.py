@@ -306,7 +306,11 @@ def assemble_report(
     coverage_limitations = bundle.coverage_limitations
     if bundle.review_scope == "unit_tests":
         kept, pre_existing, dropped_citations, evidence_limitations = (
-            validate_unit_test_findings(model_findings or [], bundle)
+            validate_unit_test_findings(
+                model_findings or [],
+                bundle,
+                check_contracts=model_findings is not None or usage_cost_cents > 0,
+            )
         )
         dropped_absence = 0
         coverage_limitations.extend(evidence_limitations)
