@@ -363,7 +363,7 @@ def test_unit_test_review_delivers_only_an_encrypted_report(
     )
 
     def review(reviewer: OpenAICompatibleReviewer, bundle_text: str) -> str:
-        assert "Test the public contract" in reviewer.prompt_text
+        assert "caller-visible" in reviewer.prompt_text
         assert reviewer.settings.model_name == "unit-test-reviewer"
         assert reviewer.settings.response_format == "json_object"
         assert '"name": "Unit"' in bundle_text
