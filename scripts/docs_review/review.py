@@ -179,6 +179,10 @@ def review_uncached(
         active_reviewer, render_bundle(bundle), request.retry_count
     )
     usage_cost_cents = attempts * request.budget.call_cost_cents
+    if request.diagnostic_model_responses is not None and raw_output is not None:
+        request.diagnostic_model_responses.append(raw_output)
+    else:
+        pass
     if raw_output is None:
         report = assemble_report(
             bundle=bundle,
