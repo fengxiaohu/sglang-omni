@@ -115,15 +115,18 @@ class TestResolve:
     def test_dotted_arguments_are_applied_like_serve_applies_them(
         self, runner, plain_config_file, stage
     ):
-        argv = [f"--{stage}.engine.mem-fraction-static", "0.35"]
+        argv = [f"--{stage}.engine.mem_fraction_static", "0.35"]
         result = runner.invoke(
             config_app, ["resolve", "--config", str(plain_config_file), *argv]
         )
 
         assert result.exit_code == 0, output_of(result)
         manager = ConfigManager.from_file(str(plain_config_file))
-        expected = manager.merge_config(manager.parse_extra_args(argv))
-        assert yaml.safe_load(result.stdout) == dump_user_config(expected)
+        extra_args = manager.parse_extra_args(argv)
+        expected = manager.merge_config(extra_args)
+        printed = yaml.safe_load(result.stdout)
+        assert printed == dump_user_config(expected)
+        assert printed["stages"][stage]["engine"]["mem_fraction_static"] == 0.35
 
     def test_stdout_is_a_usable_config_file(self, runner, config_file, stage):
         """`config resolve > pipeline.yaml` must produce a loadable document
