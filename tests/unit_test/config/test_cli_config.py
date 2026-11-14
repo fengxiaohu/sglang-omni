@@ -113,15 +113,15 @@ class TestResolve:
         assert yaml.safe_load(result.stdout) == dump_user_config(expected)
 
     def test_dotted_arguments_are_applied_like_serve_applies_them(
-        self, runner, config_file, stage
+        self, runner, plain_config_file, stage
     ):
         argv = [f"--{stage}.engine.mem_fraction_static", "0.35"]
         result = runner.invoke(
-            config_app, ["resolve", "--config", str(config_file), *argv]
+            config_app, ["resolve", "--config", str(plain_config_file), *argv]
         )
 
         assert result.exit_code == 0, output_of(result)
-        manager = ConfigManager.from_file(str(config_file))
+        manager = ConfigManager.from_file(str(plain_config_file))
         extra_args = manager.parse_extra_args(argv)
         expected = manager.merge_config(extra_args)
         printed = yaml.safe_load(result.stdout)
