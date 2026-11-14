@@ -16,6 +16,10 @@ from scripts.docs_review.models import (
     SourceCitation,
     UnitTestCase,
 )
+from scripts.docs_review.router_update_audit import (
+    INTERNAL_ASSERTION,
+    audit_router_update,
+)
 from scripts.docs_review.snapshot import citation_matches
 from scripts.docs_review.unit_tests import (
     UNIT_TEST_ROOT,
@@ -27,7 +31,7 @@ from scripts.docs_review.unit_tests import (
 
 DUPLICATE_RULE_ID = "UNIT_TEST_DUPLICATE"
 UNIT_TEST_RULE_IDS = {
-    "UNIT_TEST_INTERNAL_ASSERTION",
+    INTERNAL_ASSERTION,
     SELF_DERIVED_EXPECTATION,
     DUPLICATE_RULE_ID,
 }
@@ -238,6 +242,8 @@ def validate_unit_test_findings(
     local_findings, independent_assertions = (
         audit_config_resolve(bundle) if check_contracts else ({}, set())
     )
+    router_findings = audit_router_update(bundle) if check_contracts else {}
+    local_findings.update(router_findings)
     candidates = [*local_findings.values(), *findings]
     for index, finding in enumerate(candidates, 1):
         test_citation = resolve_unit_test_citation(
@@ -286,7 +292,12 @@ def validate_unit_test_findings(
         )
         if index > len(local_findings) and case is not None:
             case_identity = (case.file_path, case.name)
-            if finding.rule_id in {
+            if (
+                finding.rule_id == INTERNAL_ASSERTION
+                and case_identity in router_findings
+            ):
+                continue
+            elif finding.rule_id in {
                 SELF_DERIVED_EXPECTATION,
                 INSUFFICIENT_EVIDENCE,
             } and (

@@ -227,6 +227,60 @@ def test_replays_weak_and_strengthened_contract_cases(
     assert contract_quote in after_reviewer.inputs[0]
 
 
+@pytest.mark.parametrize("case_variant", ["weak", "strengthened", "missing_conflict"])
+def test_router_update_review_survives_an_empty_model_response(
+    tmp_path: Path, historical_cases: list[HistoricalCase], case_variant: str
+) -> None:
+    historical_case = historical_cases[1]
+    retry_gate_source = """
+async def broadcast_admin_request(app, request, path):
+    journal = getattr(app.state, "update_journal", None)
+    if journal is not None and journal.has_pending():
+        return error_response(
+            409,
+            "an earlier weight update did not complete",
+        )
+"""
+    example = historical_case.model_copy(
+        update={
+            "contract_source": historical_case.contract_source
+            + retry_gate_source.replace(
+                "409", "503" if case_variant == "missing_conflict" else "409"
+            )
+        }
+    )
+    base_commit, before_commit, after_commit = historical_revisions(tmp_path, example)
+    request = request_for(
+        tmp_path,
+        base_commit,
+        after_commit if case_variant == "strengthened" else before_commit,
+        1,
+    )
+    request.include_paths.append(example.contract_path)
+    review = run_review(
+        request,
+        OfflineReviewer('{"findings":[]}'),
+        SystemClock(),
+    )
+    assert review.report.execution == "complete", review.report.incomplete_reason
+    assert review.report.dropped_citation_count == 0
+    assert len(review.report.unit_test_cases) == 1
+    if case_variant == "weak":
+        assert review.report.outcome == "findings"
+        (finding,) = review.report.findings
+        assert finding.rule_id == "UNIT_TEST_INTERNAL_ASSERTION"
+        assert "restore_admin_disabled_state" in finding.quote
+        assert finding.evidence_file_path == example.contract_path
+        assert "journal.has_pending()" in finding.evidence_quote
+        assert "409" in finding.evidence_quote
+        assert "POST /update_weights_from_disk" in finding.public_contract
+        assert "409" in finding.regression
+        assert "status_code == 409" in finding.suggested_fix
+    else:
+        assert review.report.outcome == "no_findings"
+        assert not review.report.findings
+
+
 @pytest.mark.parametrize("case_variant", ["weak", "strengthened", "different_parser"])
 def test_cli_override_review_survives_an_empty_model_response(
     tmp_path: Path,
