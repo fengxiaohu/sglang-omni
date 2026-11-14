@@ -277,7 +277,9 @@ def test_publishes_only_selected_findings_for_current_revision(
     if scenario != "collection_only":
         assert len(report["report"]["findings"]) == 3
         assert report["report"]["findings"][1]["claim"] == model_finding.claim
-        assert "2. `API_CONTRACT`" in (artifact / "report.md").read_text(encoding="utf-8")
+        assert "2. `API_CONTRACT`" in (artifact / "report.md").read_text(
+            encoding="utf-8"
+        )
     else:
         pass
 
