@@ -133,13 +133,23 @@ def format_finding_section(
         for index, finding in enumerate(findings, 1):
             marker = f"{index}." if numbered else "-"
             indent = " " * (len(marker) + 1)
+            if numbered:
+                claim = " ".join(finding.claim.split())
+                evidence_quote = " ".join(finding.evidence_quote.split())
+                impact = " ".join(finding.impact.split())
+                suggested_fix = " ".join(finding.suggested_fix.split())
+            else:
+                claim = finding.claim
+                evidence_quote = finding.evidence_quote
+                impact = finding.impact
+                suggested_fix = finding.suggested_fix
             lines.append(
                 f"{marker} `{finding.rule_id}` ({finding.certainty}, {finding.change_relation}) "
-                f"`{finding.file_path}`:{finding.line_start}: {finding.claim}"
+                f"`{finding.file_path}`:{finding.line_start}: {claim}"
             )
             lines.append(
-                f"{indent}Evidence: `{finding.evidence_file_path}` `{finding.evidence_quote}`"
+                f"{indent}Evidence: `{finding.evidence_file_path}` `{evidence_quote}`"
             )
-            lines.append(f"{indent}Impact: {finding.impact}")
-            lines.append(f"{indent}Fix: {finding.suggested_fix}")
+            lines.append(f"{indent}Impact: {impact}")
+            lines.append(f"{indent}Fix: {suggested_fix}")
         return lines

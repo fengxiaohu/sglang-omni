@@ -7,6 +7,10 @@ on:
         description: Completed advisory review run ID
         required: true
         type: string
+      review_run_attempt:
+        description: Attempt number from the report artifact name
+        required: true
+        type: string
       finding_numbers:
         description: Comma-separated finding numbers from the report
         required: true
@@ -35,5 +39,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REVIEW_RUN_ID: ${{ inputs.review_run_id }}
+          REVIEW_RUN_ATTEMPT: ${{ inputs.review_run_attempt }}
           FINDING_NUMBERS: ${{ inputs.finding_numbers }}
         run: python -m scripts.docs_review.github_publish

@@ -49,38 +49,60 @@ class ReviewRun:
     report: Report
 
 
+@dataclass(frozen=True, kw_only=True)
+class PreparedReview:
+    bundle: ReviewBundle
+    prompt_text: str
+    prompt_version: str
+    input_hash: str
+
+
+def prepare_review(request: ReviewRequest) -> PreparedReview:
+    bundle = collect_review_bundle(request)
+    prompt_text = read_prompt()
+    prompt_version = hashlib.sha256(prompt_text.encode()).hexdigest()
+    return PreparedReview(
+        bundle=bundle,
+        prompt_text=prompt_text,
+        prompt_version=prompt_version,
+        input_hash=review_input_sha256(bundle, request.model_settings, prompt_version),
+    )
+
+
 def run_review(
     request: ReviewRequest,
     reviewer: DocumentationReviewer | None,
     clock: Clock,
+    *,
+    prepared: PreparedReview | None = None,
 ) -> ReviewRun:
     if request.retry_count < 0:
         raise ValueError("retry_count must be zero or greater")
     else:
         pass
-    bundle = collect_review_bundle(request)
-    prompt_text = read_prompt()
-    prompt_version = hashlib.sha256(prompt_text.encode()).hexdigest()
-    input_hash = review_input_sha256(bundle, request.model_settings, prompt_version)
-    payload = bundle_payload(bundle, prompt_version, input_hash)
+    prepared_review = prepared if prepared is not None else prepare_review(request)
+    payload = bundle_payload(
+        prepared_review.bundle,
+        prepared_review.prompt_version,
+        prepared_review.input_hash,
+    )
     ledger = ReviewLedger(request.ledger_path)
     try:
-        cached = ledger.fetch(input_hash)
+        cached = ledger.fetch(prepared_review.input_hash)
         if cached is not None:
-            return ReviewRun(bundle=bundle, payload=payload, report=cached)
+            return ReviewRun(
+                bundle=prepared_review.bundle, payload=payload, report=cached
+            )
         else:
             pass
         report = review_uncached(
             request,
             reviewer,
             clock,
-            bundle,
-            prompt_text,
-            prompt_version,
-            input_hash,
+            prepared_review,
             ledger,
         )
-        return ReviewRun(bundle=bundle, payload=payload, report=report)
+        return ReviewRun(bundle=prepared_review.bundle, payload=payload, report=report)
     finally:
         ledger.close()
 
@@ -89,12 +111,12 @@ def review_uncached(
     request: ReviewRequest,
     reviewer: DocumentationReviewer | None,
     clock: Clock,
-    bundle: ReviewBundle,
-    prompt_text: str,
-    prompt_version: str,
-    input_hash: str,
+    prepared: PreparedReview,
     ledger: ReviewLedger,
 ) -> Report:
+    bundle = prepared.bundle
+    prompt_version = prepared.prompt_version
+    input_hash = prepared.input_hash
     reviewed_at = clock.now()
     if reviewer is None and request.model_settings is None:
         return assemble_report(
@@ -145,7 +167,7 @@ def review_uncached(
             raise RuntimeError("model settings missing after authorization")
         else:
             active_reviewer: DocumentationReviewer = OpenAICompatibleReviewer(
-                settings, prompt_text
+                settings, prepared.prompt_text
             )
     else:
         active_reviewer = reviewer

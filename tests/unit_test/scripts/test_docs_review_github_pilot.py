@@ -90,6 +90,8 @@ def create_repository(root: Path) -> tuple[str, str]:
         ["git", "-C", str(root), "config", "user.email", "review@example.com"],
         check=True,
     )
+    for name, value in (("core.hooksPath", "/dev/null"), ("commit.gpgsign", "false")):
+        subprocess.run(["git", "-C", str(root), "config", name, value], check=True)
     (root / "README.md").write_text("Base\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
     subprocess.run(["git", "-C", str(root), "commit", "-qm", "Base"], check=True)
@@ -122,7 +124,7 @@ def configure_run(
         "RUNNER_TEMP": str(tmp_path),
         "GITHUB_OUTPUT": str(tmp_path / "outputs"),
         "GITHUB_RUN_ID": "123",
-        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ATTEMPT": "2",
         "OFFLINE_REVIEW": str(offline).lower(),
         "FOLLOW_UP": "false",
         "DOCS_REVIEW_API_KEY": "test-only-key",
@@ -168,6 +170,7 @@ def test_offline_report_contains_results_and_excludes_full_inputs(
     assert {file.name for file in artifact.iterdir()} == {"report.json", "report.md"}
     report = json.loads((artifact / "report.json").read_text(encoding="utf-8"))
     assert report["stale"] is True
+    assert (report["run_id"], report["run_attempt"]) == ("123", 2)
     assert report["report"]["execution"] == "incomplete"
     assert report["publishable"] is False
     assert "input_bundle" not in report
@@ -218,11 +221,16 @@ def test_failed_model_call_is_reserved_before_invocation_and_not_repeated(
     assert len(reservations.reservations) == 1
 
 
-@pytest.mark.parametrize("scenario", ["current", "changed_before", "changed_during"])
+@pytest.mark.parametrize(
+    "scenario",
+    ["current", "changed_before", "changed_during", "wrong_attempt", "collection_only"],
+)
 def test_publishes_only_selected_findings_for_current_revision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
-    base, head = configure_run(tmp_path, monkeypatch, offline=False)
+    base, head = configure_run(
+        tmp_path, monkeypatch, offline=scenario == "collection_only"
+    )
     original = github_pilot.PullRequest(
         state="open", body="", base={"sha": base}, head={"sha": head}
     )
@@ -265,18 +273,22 @@ def test_publishes_only_selected_findings_for_current_revision(
     github_pilot.run_github_review()
     artifact = tmp_path / "docs-review" / "artifact"
     report = json.loads((artifact / "report.json").read_text(encoding="utf-8"))
-    assert report["publishable"] is True
-    assert len(report["report"]["findings"]) == 3
-    assert report["report"]["findings"][1]["claim"] == model_finding.claim
-    assert "2. `API_CONTRACT`" in (artifact / "report.md").read_text(encoding="utf-8")
+    assert report["publishable"] == (scenario != "collection_only")
+    if scenario != "collection_only":
+        assert len(report["report"]["findings"]) == 3
+        assert report["report"]["findings"][1]["claim"] == model_finding.claim
+        assert "2. `API_CONTRACT`" in (artifact / "report.md").read_text(encoding="utf-8")
+    else:
+        pass
 
     monkeypatch.setenv("REVIEW_RUN_ID", "123")
+    monkeypatch.setenv("REVIEW_RUN_ATTEMPT", "2")
     monkeypatch.setenv("FINDING_NUMBERS", "2")
     monkeypatch.setenv("DEFAULT_BRANCH", "main")
     posted: list[tuple[str, str]] = []
 
     def api(endpoint: str, body: str | None = None, method: str = "PUT") -> str:
-        if endpoint.endswith("/actions/runs/123"):
+        if endpoint.endswith("/actions/runs/123/attempts/2"):
             return json.dumps(
                 {
                     "event": "workflow_dispatch",
@@ -297,13 +309,19 @@ def test_publishes_only_selected_findings_for_current_revision(
             return json.dumps({"id": 42})
 
     def download(
-        arguments: list[str], **kwargs: bool
+        arguments: list[str], *, capture_output: bool, text: bool, check: bool
     ) -> subprocess.CompletedProcess[str]:
+        assert capture_output and text and not check
         assert arguments[arguments.index("--name") + 1] == "docs-review-123-2"
         destination = Path(arguments[arguments.index("--dir") + 1])
-        (destination / "report.json").write_bytes(
-            (artifact / "report.json").read_bytes()
-        )
+        artifact_text = (artifact / "report.json").read_text(encoding="utf-8")
+        if scenario == "wrong_attempt":
+            wrong_artifact = json.loads(artifact_text)
+            wrong_artifact["run_attempt"] = 1
+            artifact_text = json.dumps(wrong_artifact)
+        else:
+            pass
+        (destination / "report.json").write_text(artifact_text, encoding="utf-8")
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
     updated = original.model_copy(update={"head": github_pilot.Revision(sha="f" * 40)})
@@ -318,8 +336,13 @@ def test_publishes_only_selected_findings_for_current_revision(
     monkeypatch.setattr(
         github_publish, "fetch_pull_request", lambda name, number: next(revisions)
     )
-    if scenario == "changed_before":
-        with pytest.raises(PilotError, match="changed since the review"):
+    expected_errors = {
+        "changed_before": "changed since the review",
+        "wrong_attempt": "different run or attempt",
+        "collection_only": "model-backed Docs review",
+    }
+    if scenario in expected_errors:
+        with pytest.raises(PilotError, match=expected_errors[scenario]):
             github_publish.publish_selected_findings()
         assert posted == []
     else:

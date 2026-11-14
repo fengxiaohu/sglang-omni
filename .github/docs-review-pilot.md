@@ -38,17 +38,20 @@ gh workflow run docs-review-pilot.yml -f pull_request_number=123 -f offline=true
 Set `offline=false` to authorize one live call. Use `follow_up=true` to authorize
 the second call for a PR. Live reviews send the selected documents, related
 code, and the PR description to the configured model provider.
+The pilot caps live review inputs at 100,000 bytes. Use the local review tool
+for collection and inspection when a change exceeds the pilot's limit.
 
 Download the `docs-review-RUN_ID-ATTEMPT` artifact and open `report.md`. It numbers
 the findings in the same order as `report.findings` in `report.json`. Both
 files are plaintext and are downloadable by signed-in users with repository
 read access. They contain the report metadata, advisory findings, and citations.
 
-Run **Publish Selected Docs Review Findings** with the review run ID and the
-comma-separated numbers to post in one PR comment.
+Run **Publish Selected Docs Review Findings** with the run ID, the attempt
+number you inspected, and the comma-separated numbers to post in one PR comment.
 
 ```sh
-gh workflow run docs-review-publish.yml -f review_run_id=RUN_ID -f finding_numbers=1,2
+gh workflow run docs-review-publish.yml -f review_run_id=RUN_ID \
+  -f review_run_attempt=ATTEMPT -f finding_numbers=1,2
 ```
 
 Publication requires a successful model-backed run and an open PR at the

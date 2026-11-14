@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
 import re
@@ -17,20 +16,19 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, Field, ValidationError
 
-from scripts.docs_review.collect import collect_review_bundle, review_input_sha256
 from scripts.docs_review.models import (
     BudgetConfig,
     ModelSettings,
     Report,
     ReviewRequest,
 )
-from scripts.docs_review.policy import read_prompt
 from scripts.docs_review.reporting import render_bundle, render_markdown
-from scripts.docs_review.review import SystemClock, run_review
+from scripts.docs_review.review import SystemClock, prepare_review, run_review
 
 STATE_BRANCH = "docs-review-ledger"
 STATE_PATH = "docs-review-ledger.json"
 MAX_INPUT_BYTES = 100_000
+MAX_REVIEWS_PER_PULL_REQUEST = 2
 REVIEW_WORKFLOW_PATH = ".github/workflows/docs-review-pilot.yml"
 
 
@@ -52,6 +50,8 @@ class PullRequest(BaseModel):
 
 class ReviewArtifact(BaseModel):
     pull_request_number: int = Field(gt=0)
+    run_id: str = Field(pattern=r"^[1-9][0-9]*$")
+    run_attempt: int = Field(gt=0)
     stale: bool
     publishable: bool
     report: Report
@@ -146,7 +146,7 @@ def authorize_reservation(
         or any(entry.execution == "complete" for entry in matching_runs)
     ):
         raise PilotError("This exact review was already reserved; see its earlier run")
-    elif len(pull_request_runs) >= 2:
+    elif len(pull_request_runs) >= MAX_REVIEWS_PER_PULL_REQUEST:
         raise PilotError("Pull request review limit reached")
     elif pull_request_runs and not follow_up_authorized:
         raise PilotError("A follow-up review must be explicitly authorized")
@@ -247,6 +247,8 @@ def run_github_review() -> None:
         raise PilotError("Pull request number must be positive")
     else:
         pass
+    run_id = os.environ["GITHUB_RUN_ID"]
+    run_attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
     pull_request = fetch_pull_request(repository_name, pull_request_number)
     if pull_request.state != "open":
         raise PilotError("The pull request is not open")
@@ -285,7 +287,8 @@ def run_github_review() -> None:
         budget=budget,
         ledger_path=output_directory / "local.sqlite",
     )
-    bundle = collect_review_bundle(request)
+    prepared = prepare_review(request)
+    bundle = prepared.bundle
     if not bundle.reviewed_paths:
         raise PilotError("No changed documentation files were found")
     elif not offline and len(render_bundle(bundle).encode()) > MAX_INPUT_BYTES:
@@ -297,16 +300,14 @@ def run_github_review() -> None:
     elif budget is None:
         raise PilotError("The review budget is not configured")
     else:
-        prompt_version = hashlib.sha256(read_prompt().encode()).hexdigest()
-        input_hash = review_input_sha256(bundle, model_settings, prompt_version)
         reservation = Reservation(
             pull_request_number=pull_request_number,
             head_commit_sha=pull_request.head.sha,
-            review_input_sha256=input_hash,
+            review_input_sha256=prepared.input_hash,
             estimated_cost_cents=budget.call_cost_cents,
             date_utc=datetime.now(timezone.utc).date().isoformat(),
-            run_id=os.environ["GITHUB_RUN_ID"],
-            run_attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),
+            run_id=run_id,
+            run_attempt=run_attempt,
         )
         reservations, content_sha = load_reservations(repository_name)
         authorize_reservation(
@@ -316,7 +317,7 @@ def run_github_review() -> None:
             os.environ["FOLLOW_UP"] == "true",
         )
         save_reservation(repository_name, reservations, content_sha, reservation)
-    result = run_review(request, None, SystemClock())
+    result = run_review(request, None, SystemClock(), prepared=prepared)
     current = fetch_pull_request(repository_name, pull_request_number)
     stale = (
         current.state != "open"
@@ -325,6 +326,8 @@ def run_github_review() -> None:
     )
     artifact = ReviewArtifact(
         pull_request_number=pull_request_number,
+        run_id=run_id,
+        run_attempt=run_attempt,
         stale=stale,
         publishable=(
             not offline and not stale and result.report.execution == "complete"
@@ -336,6 +339,7 @@ def run_github_review() -> None:
     )
     notices = [
         f"Pull request #{pull_request_number}",
+        f"Review run {run_id}, attempt {run_attempt}.",
         "Findings are advisory and selected separately for publication.",
     ]
     if offline:
