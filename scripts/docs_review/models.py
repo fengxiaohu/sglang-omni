@@ -249,7 +249,6 @@ class ReviewRequest:
     include_paths: list[str] = field(default_factory=list)
     review_scope: ReviewScope = "docs"
     collection_limitations: list[str] = field(default_factory=list)
-    diagnostic_model_responses: list[str] | None = None
 
 
 class DocumentationReviewer(Protocol):

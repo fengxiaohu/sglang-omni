@@ -35,13 +35,16 @@ class HistoricalFixtures(BaseModel):
 
 
 class OfflineReviewer:
-    def __init__(self, findings: list[Finding]) -> None:
-        self.findings = findings
+    def __init__(self, response: list[Finding] | str) -> None:
+        if isinstance(response, str):
+            self.response = response
+        else:
+            self.response = json.dumps([finding.model_dump() for finding in response])
         self.inputs: list[str] = []
 
     def review(self, bundle_text: str) -> str:
         self.inputs.append(bundle_text)
-        return json.dumps([finding.model_dump() for finding in self.findings])
+        return self.response
 
 
 def git(repository: Path, *arguments: str) -> str:
@@ -346,3 +349,69 @@ def test_fixture_only_edit_is_reported_as_unreviewed(tmp_path: Path) -> None:
         f"{file_path}: test module changed outside" in result.report.incomplete_reason
     )
     assert reviewer.inputs == []
+
+
+@pytest.mark.parametrize("unique_contract_quote", [True, False])
+def test_resolves_a_model_quote_with_no_reported_source_lines(
+    tmp_path: Path,
+    historical_cases: list[HistoricalCase],
+    unique_contract_quote: bool,
+) -> None:
+    case = historical_cases[0]
+    contract_quote = (
+        "Takes the same arguments as `sgl-omni serve`, including dotted overrides"
+    )
+    if not unique_contract_quote:
+        case = case.model_copy(
+            update={"contract_source": case.contract_source + f"\n# {contract_quote}\n"}
+        )
+    else:
+        pass
+    base_commit, before_commit, _ = historical_revisions(tmp_path, case)
+    test_quote = "expected = manager.merge_config(manager.parse_extra_args(argv))"
+    response = json.dumps(
+        {
+            "findings": [
+                {
+                    "rule_id": "UNIT_TEST_SELF_DERIVED_EXPECTATION",
+                    "file_path": case.test_path,
+                    "line_start": 169,
+                    "line_end": 171,
+                    "quote": test_quote,
+                    "evidence_file_path": case.contract_path,
+                    "evidence_quote": contract_quote,
+                    "claim": "The expected YAML is computed by the same resolver.",
+                    "public_contract": "The CLI emits the requested stage override.",
+                    "regression": "A dropped override leaves the default in stdout.",
+                    "impact": "The preview gives the caller an incorrect configuration.",
+                    "suggested_fix": "Assert the emitted stage memory fraction equals 0.35.",
+                    "change_relation": "introduced",
+                    "certainty": "supported",
+                }
+            ]
+        }
+    )
+
+    result = run_review(
+        request_for(tmp_path, base_commit, before_commit, 1),
+        OfflineReviewer(response),
+        SystemClock(),
+    )
+
+    if not unique_contract_quote:
+        assert result.report.execution == "incomplete"
+        assert result.report.findings == []
+    else:
+        assert result.report.outcome == "findings", result.report.incomplete_reason
+        finding = result.report.findings[0]
+        assert finding.evidence_file_path == case.contract_path
+        assert finding.evidence_quote.strip() == contract_quote
+        assert finding.evidence_line_start == finding.evidence_line_end
+        assert (
+            contract_quote
+            in case.contract_source.splitlines()[finding.evidence_line_start - 1]
+        )
+        assert test_quote in case.before.splitlines()[finding.line_start - 1]
+        markdown = render_markdown(result.report)
+        assert "A dropped override leaves the default in stdout." in markdown
+        assert "Assert the emitted stage memory fraction equals 0.35." in markdown

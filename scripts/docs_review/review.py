@@ -31,7 +31,6 @@ from scripts.docs_review.models import (
     Report,
     ReviewBundle,
     ReviewRequest,
-    ReviewScope,
 )
 from scripts.docs_review.policy import KNOWN_RULE_IDS, read_prompt
 from scripts.docs_review.reporting import render_bundle
@@ -42,7 +41,10 @@ from scripts.docs_review.transport import (
     OpenAICompatibleReviewer,
     ReviewerError,
 )
-from scripts.docs_review.unit_tests import validate_unit_test_findings
+from scripts.docs_review.unit_test_findings import (
+    fill_unit_test_finding_lines,
+    validate_unit_test_findings,
+)
 
 
 class SystemClock:
@@ -179,10 +181,6 @@ def review_uncached(
         active_reviewer, render_bundle(bundle), request.retry_count
     )
     usage_cost_cents = attempts * request.budget.call_cost_cents
-    if request.diagnostic_model_responses is not None and raw_output is not None:
-        request.diagnostic_model_responses.append(raw_output)
-    else:
-        pass
     if raw_output is None:
         report = assemble_report(
             bundle=bundle,
@@ -194,7 +192,7 @@ def review_uncached(
             usage_cost_cents=usage_cost_cents,
         )
     else:
-        parsed, parse_error = parse_model_findings(raw_output, bundle.review_scope)
+        parsed, parse_error = parse_model_findings(raw_output, bundle)
         if parsed is None:
             report = assemble_report(
                 bundle=bundle,
@@ -239,9 +237,9 @@ def call_with_retries(
 
 
 def parse_model_findings(
-    raw: str, review_scope: ReviewScope
+    raw: str, bundle: ReviewBundle
 ) -> tuple[list[Finding] | None, str]:
-    if review_scope == "unit_tests":
+    if bundle.review_scope == "unit_tests":
         raw = raw.strip()
         if raw.startswith(("```json\n", "```\n")) and raw.endswith("\n```"):
             raw = raw.split("\n", 1)[1][:-4]
@@ -259,7 +257,7 @@ def parse_model_findings(
     else:
         pass
     if (
-        review_scope == "unit_tests"
+        bundle.review_scope == "unit_tests"
         and isinstance(payload, dict)
         and set(payload) == {"findings"}
     ):
@@ -271,6 +269,10 @@ def parse_model_findings(
     else:
         findings: list[Finding] = []
         for index, entry in enumerate(payload, 1):
+            if bundle.review_scope == "unit_tests" and isinstance(entry, dict):
+                fill_unit_test_finding_lines(bundle, entry)
+            else:
+                pass
             try:
                 findings.append(Finding.model_validate(entry))
             except ValidationError as error:

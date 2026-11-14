@@ -356,9 +356,6 @@ def run_github_review() -> None:
             raise PilotError("The estimated call cost must be positive")
         else:
             pass
-    diagnostic_model_responses: list[str] | None = (
-        [] if review_scope == "unit_tests" and not offline else None
-    )
     request = ReviewRequest(
         repository=repository,
         base_commit_sha=pull_request.base.sha,
@@ -371,7 +368,6 @@ def run_github_review() -> None:
         budget=budget,
         ledger_path=output_directory / "local.sqlite",
         review_scope=review_scope,
-        diagnostic_model_responses=diagnostic_model_responses,
         include_paths=os.environ.get("UNIT_TEST_CONTEXT_PATHS", "").splitlines(),
         checks=(
             fetch_unit_test_checks(repository_name, pull_request.head.sha)
@@ -430,7 +426,6 @@ def run_github_review() -> None:
         "stale": stale,
         "input_bundle": result.payload.model_dump(mode="json"),
         "report": result.report.model_dump(mode="json"),
-        "diagnostic_model_responses": diagnostic_model_responses,
         "markdown": render_markdown(result.report),
     }
     encrypted = cipher.encrypt(json.dumps(private_report).encode())
