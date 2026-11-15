@@ -1,0 +1,18 @@
+name: PR 3993 labeled event probe
+
+on:
+  pull_request:
+    types: [labeled]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  observe:
+    if: github.head_ref == 'codex/pr3993-labeler-live-20261115' && github.event.pull_request.head.repo.full_name == 'fengxiaohu/sglang-omni'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record the label event
+        env:
+          LABEL_NAME: ${{ github.event.label.name }}
+        run: printf 'Received a labeled event for %s\n' "$LABEL_NAME"
