@@ -1202,3 +1202,8 @@ def test_reasoning_effort_and_token_limit_field_are_independent() -> None:
     assert request["reasoning_effort"] == "none"
     assert request["max_tokens"] == 8192
     assert "max_completion_tokens" not in request
+
+
+def test_e2e_probe_placeholder() -> None:
+    """Fork E2E probe; safe no-op assertion."""
+    assert True
