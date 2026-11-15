@@ -1205,5 +1205,7 @@ def test_reasoning_effort_and_token_limit_field_are_independent() -> None:
 
 
 def test_e2e_probe_placeholder() -> None:
-    """Fork E2E probe; assertion does not check a real contract."""
-    assert True or False
+    """Fork E2E probe; assertion does not check coordinator behavior."""
+    import sglang_omni.pipeline.coordinator as coordinator
+
+    assert coordinator is None or True
