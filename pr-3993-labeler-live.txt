@@ -1,1 +1,2 @@
 Marker for this isolated labeler verification pull request.
+This update exercises the synchronize event with no documentation edits.
