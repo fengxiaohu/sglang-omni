@@ -32,7 +32,7 @@ CASES = {
     34: ("e962bb823d399b16fbefc9807ad55d7fa40aed57", CLI_TEST, CLI_SOURCES, 1),
     33: ("ec9d71ed38bd523bd96d0e695d2de7db1ae82b76", CLI_TEST, CLI_SOURCES, 0),
     37: ("7514ae0c5386e2673a5d688b2de9eb06414bf88d", ROUTER_TEST, ROUTER_SOURCES, 1),
-    38: ("0bdd04b0fdaff3d85743d57a5a614c82591dcbef", ROUTER_TEST, ROUTER_SOURCES, 0),
+    38: ("0bdd04b0fdaff3d85743d57a5a614c82591dcbef", ROUTER_TEST, [ROUTER_CONTRACT, "sglang_omni_router/python/config.py"], 0),
 }
 
 
@@ -85,6 +85,9 @@ def main() -> None:
         "case_count": len(report.unit_test_cases),
         "reviewed_cases": [case.name for case in report.unit_test_cases if case.reviewed],
         "findings": [finding.model_dump(mode="json") for finding in report.findings],
+        "pre_existing_findings": [
+            finding.model_dump(mode="json") for finding in report.pre_existing_findings
+        ],
     }
     print(json.dumps(results))
     assert report.execution == "complete", report.incomplete_reason

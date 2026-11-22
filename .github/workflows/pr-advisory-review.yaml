@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        fixture: [34, 33, 37]
+        fixture: [34, 33, 37, 38]
     name: Compare fork PR ${{ matrix.fixture }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -32,9 +32,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FIXTURE_PR: ${{ matrix.fixture }}
           DOCS_REVIEW_MODEL: ${{ vars.DOCS_REVIEW_MODEL }}
-          UNIT_TEST_REVIEW_MODEL: ${{ vars.UNIT_TEST_REVIEW_MODEL }}
+          UNIT_TEST_REVIEW_MODEL: ${{ vars.UNIT_TEST_REVIEW_PILOT_MODEL || vars.UNIT_TEST_REVIEW_MODEL }}
           DOCS_REVIEW_BUDGET: ${{ vars.DOCS_REVIEW_BUDGET }}
-          DOCS_REVIEW_API_KEY: ${{ secrets.DOCS_REVIEW_API_KEY }}
+          DOCS_REVIEW_API_KEY: ${{ secrets.TEST1 }}
         run: |
           if PYTHONPATH="$PWD" python .github/validate-unit-test-review.py > "$RUNNER_TEMP/acceptance.log" 2>&1; then
             echo "Acceptance passed for fork PR #$FIXTURE_PR"
