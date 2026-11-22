@@ -285,3 +285,5 @@ A bot keeps one comment on a pull request with the `/tag-and-rerun-ci` targets t
 | `PR has merge conflicts with the base branch; skip staged CI.` | Merge or rebase onto the current `main` first. |
 
 A branch created before these labels existed does not contain `resolve_ci_labels.py`. On such a branch, the Omni CI and Mac CI gates fail until the branch merges the current `main`.
+
+<!-- PR 4419 documentation-only demonstration. -->
