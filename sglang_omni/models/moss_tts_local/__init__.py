@@ -14,3 +14,5 @@ CAPABILITIES = ModelCapabilities(
 )
 
 __all__ = ["CAPABILITIES"]
+
+# Review fixture for the CI stage suggestion.
