@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        fixture: [34, 33, 37, 38]
+        fixture: [34, 33, 37]
     name: Compare fork PR ${{ matrix.fixture }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

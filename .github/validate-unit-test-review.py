@@ -21,17 +21,24 @@ CLI_TEST = "tests/unit_test/config/test_cli_config.py"
 CLI_CONTRACT = "sglang_omni/cli/config.py"
 ROUTER_TEST = "tests/unit_test/router/test_weight_update_contract.py"
 ROUTER_CONTRACT = "sglang_omni_router/python/control_plane.py"
+CLI_SOURCES = [CLI_CONTRACT, "sglang_omni/config/manager.py", "sglang_omni/config/sources.py"]
+ROUTER_SOURCES = [
+    ROUTER_CONTRACT,
+    "sglang_omni_router/python/app.py",
+    "sglang_omni_router/python/config.py",
+    "sglang_omni_router/python/worker.py",
+]
 CASES = {
-    34: ("e962bb823d399b16fbefc9807ad55d7fa40aed57", CLI_TEST, CLI_CONTRACT, 1),
-    33: ("ec9d71ed38bd523bd96d0e695d2de7db1ae82b76", CLI_TEST, CLI_CONTRACT, 0),
-    37: ("7514ae0c5386e2673a5d688b2de9eb06414bf88d", ROUTER_TEST, ROUTER_CONTRACT, 1),
-    38: ("0bdd04b0fdaff3d85743d57a5a614c82591dcbef", ROUTER_TEST, ROUTER_CONTRACT, 0),
+    34: ("e962bb823d399b16fbefc9807ad55d7fa40aed57", CLI_TEST, CLI_SOURCES, 1),
+    33: ("ec9d71ed38bd523bd96d0e695d2de7db1ae82b76", CLI_TEST, CLI_SOURCES, 0),
+    37: ("7514ae0c5386e2673a5d688b2de9eb06414bf88d", ROUTER_TEST, ROUTER_SOURCES, 1),
+    38: ("0bdd04b0fdaff3d85743d57a5a614c82591dcbef", ROUTER_TEST, ROUTER_SOURCES, 0),
 }
 
 
 def main() -> None:
     fixture_number = int(os.environ["FIXTURE_PR"])
-    head_sha, test_path, contract_path, expected_findings = CASES[fixture_number]
+    head_sha, test_path, contract_paths, expected_findings = CASES[fixture_number]
     repository = Path(os.environ["GITHUB_WORKSPACE"])
     repository_name = os.environ["GITHUB_REPOSITORY"]
     fixture = fetch_pull_request(repository_name, fixture_number)
@@ -52,7 +59,7 @@ def main() -> None:
         model_settings=settings,
         budget=budget,
         ledger_path=Path(os.environ["RUNNER_TEMP"]) / "acceptance.sqlite",
-        include_paths=[contract_path],
+        include_paths=contract_paths,
     )
     prepared = prepare_review(request)
     assert prepared.bundle.needs_model, prepared.bundle.coverage_limitations
