@@ -53,3 +53,5 @@ def vad_stage() -> VADStageConfig:
         terminal=True,
         factory_path="sglang_omni.models.vad.session.create_scheduler",
     )
+
+# Review fixture for the CI stage suggestion.
