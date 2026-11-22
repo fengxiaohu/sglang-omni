@@ -16,3 +16,5 @@ CAPABILITIES = ModelCapabilities(
 )
 
 __all__ = ["CAPABILITIES", "config"]
+
+# Review fixture for the second TTS model.
