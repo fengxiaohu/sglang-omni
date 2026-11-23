@@ -1,0 +1,13 @@
+{
+  "fixture": "synthetic demo, no hardware run was performed",
+  "model": "Demo voice model",
+  "validated_devices": [
+    {
+      "device": "NVIDIA H100",
+      "result": "passed"
+    }
+  ],
+  "untested_devices": [
+    "NVIDIA RTX 4090 24 GB"
+  ]
+}
