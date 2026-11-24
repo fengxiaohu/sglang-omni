@@ -23,32 +23,36 @@ jobs:
           - slot: slot-1
             runner: omni-h100-1
             gpu: GPU-8c2e7fe8-6622-46fc-374a-1b0bea3c1a31
-    container:
-      image: docker.io/hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
-      options: -e NVIDIA_VISIBLE_DEVICES -e OMNI_CI_CPUSET
     steps:
-      - uses: actions/checkout@v4
-      - name: Verify assigned H100
+      - name: Verify assigned GPU and hold CUDA context
         shell: bash
         env:
           EXPECTED_RUNNER: ${{ matrix.runner }}
           EXPECTED_GPU: ${{ matrix.gpu }}
         run: |
           set -euo pipefail
-          actual=$(nvidia-smi --query-gpu=uuid --format=csv,noheader)
-          echo "observed runner=$RUNNER_NAME gpu=$actual"
-          [[ "$RUNNER_NAME" == "$EXPECTED_RUNNER" && "$actual" == "$EXPECTED_GPU" ]]
-          /opt/sglang/bin/python3 - <<'PY'
+          [[ "$RUNNER_NAME" == "$EXPECTED_RUNNER" ]]
+          echo "Runner $RUNNER_NAME"
+          docker run --rm -i -e NVIDIA_VISIBLE_DEVICES -e EXPECTED_GPU --entrypoint /opt/sglang/bin/python3 docker.io/hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a -u - <<'PY'
           import os
+          import subprocess
+          import time
           import torch
+
+          expected = os.environ["EXPECTED_GPU"]
+          visible = subprocess.check_output(["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"], text=True).splitlines()
+          assert visible == [expected], visible
           assert torch.cuda.device_count() == 1
-          gpu = torch.cuda.get_device_properties(0)
-          uuid = str(gpu.uuid).lower().removeprefix("gpu-")
-          assert uuid == os.environ["EXPECTED_GPU"].lower().removeprefix("gpu-")
-          assert "H100" in gpu.name
-          assert torch.arange(10, device="cuda").sum().item() == 45
-          print(f"CUDA verified: {gpu.name}, {uuid}")
+          device = torch.cuda.get_device_properties(0)
+          uuid = str(device.uuid).lower().removeprefix("gpu-")
+          assert uuid == expected.lower().removeprefix("gpu-"), uuid
+          assert "H100" in device.name, device.name
+          tensor = torch.arange(10, device="cuda")
+          assert tensor.sum().item() == 45
+          start_ms = time.time_ns() // 1_000_000
+          print(f"H100_OBSERVED {visible[0]} {device.name} count=1")
+          time.sleep(90)
+          assert tensor.sum().item() == 45
+          end_ms = time.time_ns() // 1_000_000
+          print(f"H100_INTERVAL {visible[0]} {start_ms} {end_ms}")
           PY
-      - name: Hold verified slot
-        shell: bash
-        run: sleep 90
