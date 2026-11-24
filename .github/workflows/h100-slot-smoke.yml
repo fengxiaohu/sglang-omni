@@ -1,0 +1,54 @@
+name: H100 slot smoke
+on:
+  push:
+    branches: [codex/h100-slot-smoke-20261125]
+    paths: ['.github/workflows/h100-slot-smoke.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    if: github.repository == 'fengxiaohu/sglang-omni' && github.ref == 'refs/heads/codex/h100-slot-smoke-20261125' && github.actor == 'fengxiaohu'
+    name: probe-${{ matrix.slot }}
+    runs-on: [self-hosted, pr4578-ab, "${{ matrix.slot }}"]
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - slot: slot-0
+            runner: omni-h100-0
+            gpu: GPU-e4ac2e96-1b46-aa1f-dba3-86509a07a1ff
+          - slot: slot-1
+            runner: omni-h100-1
+            gpu: GPU-8c2e7fe8-6622-46fc-374a-1b0bea3c1a31
+    container:
+      image: docker.io/hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+      options: -e NVIDIA_VISIBLE_DEVICES -e OMNI_CI_CPUSET
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify assigned H100
+        shell: bash
+        env:
+          EXPECTED_RUNNER: ${{ matrix.runner }}
+          EXPECTED_GPU: ${{ matrix.gpu }}
+        run: |
+          set -euo pipefail
+          actual=$(nvidia-smi --query-gpu=uuid --format=csv,noheader)
+          echo "observed runner=$RUNNER_NAME gpu=$actual"
+          [[ "$RUNNER_NAME" == "$EXPECTED_RUNNER" && "$actual" == "$EXPECTED_GPU" ]]
+          /opt/sglang/bin/python3 - <<'PY'
+          import os
+          import torch
+          assert torch.cuda.device_count() == 1
+          gpu = torch.cuda.get_device_properties(0)
+          uuid = str(gpu.uuid).lower().removeprefix("gpu-")
+          assert uuid == os.environ["EXPECTED_GPU"].lower().removeprefix("gpu-")
+          assert "H100" in gpu.name
+          assert torch.arange(10, device="cuda").sum().item() == 45
+          print(f"CUDA verified: {gpu.name}, {uuid}")
+          PY
+      - name: Hold verified slot
+        shell: bash
+        run: sleep 90
