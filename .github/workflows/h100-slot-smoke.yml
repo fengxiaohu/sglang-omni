@@ -23,7 +23,11 @@ jobs:
           - slot: slot-1
             runner: omni-h100-1
             gpu: GPU-8c2e7fe8-6622-46fc-374a-1b0bea3c1a31
+    container:
+      image: docker.io/hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+      options: -e NVIDIA_VISIBLE_DEVICES -e OMNI_CI_CPUSET
     steps:
+      - uses: actions/checkout@v4
       - name: Verify assigned GPU and hold CUDA context
         shell: bash
         env:
@@ -33,7 +37,7 @@ jobs:
           set -euo pipefail
           [[ "$RUNNER_NAME" == "$EXPECTED_RUNNER" ]]
           echo "Runner $RUNNER_NAME"
-          docker run --rm -i -e NVIDIA_VISIBLE_DEVICES -e EXPECTED_GPU --entrypoint /opt/sglang/bin/python3 docker.io/hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a -u - <<'PY'
+          /opt/sglang/bin/python3 -u - <<'PY'
           import os
           import subprocess
           import time
