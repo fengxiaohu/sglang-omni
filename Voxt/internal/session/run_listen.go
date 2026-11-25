@@ -9,11 +9,8 @@ import (
 	"unicode"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -39,7 +36,14 @@ func (r *run) awaitServices() bool {
 
 // useServices keeps the resolved services.
 func (r *run) useServices(s svcResult) {
-	r.resolved, r.svc, r.terms, r.snippets = true, s.svc, s.terms, s.snippets
+	r.resolved = true
+	r.svc.ASR, r.svc.ASRInfo, r.svc.VAD = s.svc.ASR, s.svc.ASRInfo, s.svc.VAD
+	r.svc.LLM, r.svc.LLMInfo = s.svc.LLM, s.svc.LLMInfo
+	r.svc.Fallback, r.svc.FallbackInfo = s.svc.Fallback, s.svc.FallbackInfo
+	r.terms, r.snippets = s.terms, s.snippets
+	if r.needsSpeechHints() {
+		r.speechHints = SpeechHints(r.settings, s.terms)
+	}
 	close(r.svcResolved)
 	up := uploadLen(s.svc.ASR, r.settings.Audio.UploadMB)
 	r.m.update(r, func(sn *Snapshot) { sn.ASR, sn.LLM, sn.UploadLen = s.svc.ASRInfo, s.svc.LLMInfo, up })
@@ -73,59 +77,6 @@ func (r *run) lacks() *Problem {
 	return nil
 }
 
-// readSelection reads the selected text of the app in front (Translate,
-// Rewrite) and puts it in the snapshot; "" for none, or when it could
-// not be read (the session goes on without one).
-func (r *run) readSelection() string {
-	defer r.m.update(r, func(s *Snapshot) { s.ReadingSelection = false })
-	cfg := r.m.cfg
-	timeout, params := cfg.ReadTimeout, proto.SelectionParams{AllowCopy: AllowCopy(r.req.Target.BundleID)}
-	if r.req.Kind == store.KindRewrite {
-		timeout, params.CopyTimeoutMS = cfg.RewriteReadTimeout, rewriteCopyMS
-	}
-	ctx, cancel := context.WithTimeout(r.ctx, timeout)
-	defer cancel()
-	res, err := cfg.Select.Selection(ctx, params)
-	if err != nil {
-		if r.ctx.Err() == nil {
-			r.logf("warning", "reading the selection: %v", err)
-		}
-		return ""
-	}
-	text := res.Text
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		// The helper's steps say which reading found nothing (#3835).
-		r.logf("info", "no selection (%s, %.0f ms; %s)", res.Via, res.MS, strings.Join(res.Steps, ", "))
-		return ""
-	}
-	if r.req.Kind == store.KindRewrite && !r.settings.Privacy.SendClipboardImage {
-		r.clip = nil
-	} else if r.req.Kind == store.KindRewrite {
-		switch {
-		case len(res.Image) > 0 && (trimmed == "[Image]" || r.settings.Privacy.SendClipboardImageWithSelection):
-			// The copy fallback returns the newly selected image before it
-			// restores the clipboard, never an earlier copied image.
-			r.clip = res.Image
-		case trimmed == "[Image]" || !r.settings.Privacy.SendClipboardImageWithSelection:
-			// Text takes the text path by default. A placeholder without a
-			// newly decoded image never revives the earlier clipboard image.
-			r.clip = nil
-		}
-	}
-	for _, t := range r.req.Previous {
-		// A follow-up's: the text selected before, still selected, is in
-		// the conversation already (#3816).
-		if strings.TrimSpace(t.Selection) == trimmed {
-			r.logf("info", "the selection is in the conversation already")
-			return ""
-		}
-	}
-	r.logf("info", "selection: %s via %s in %.0f ms", r.logText(text), res.Via, res.MS)
-	r.m.update(r, func(s *Snapshot) { s.Selection, s.SelectionVia = text, res.Via })
-	return text
-}
-
 // listen records and recognises: the recognised text, or false when the
 // session ended (cancelled, failed, too short, nothing heard).
 func (r *run) listen() (string, bool) {
@@ -150,35 +101,83 @@ func (r *run) listen() (string, bool) {
 		svcDone = nil
 	}
 	var (
-		word     string
-		heard    chan string
-		said     string
-		endPause <-chan time.Time
+		word         string
+		heard        chan string
+		said         string
+		endPause     <-chan time.Time
+		openDone     chan openResult
+		stream       asr.Stream
+		openStarted  bool
+		openReturned bool
+		warmed       bool
+		stopCh       = r.stop
+		sceneDone    <-chan struct{}
 	)
+	sceneDone = r.sceneReadySignal()
+	maybeWarm := func() {
+		cleanupReady := !r.init.split || r.init.cleanupReady
+		if warmed || !openReturned || openDone != nil || !cleanupReady || r.sceneReadySignal() != nil || r.init.split && !r.init.cleanupRequested || r.svc.LLM == nil {
+			return
+		}
+		warmed = true
+		prefiller, ctx, request, ok := r.prepareWarmup()
+		if ok {
+			go prefiller.Prefill(ctx, request)
+		}
+	}
 	open := func() chan openResult {
 		st, ok := r.streamer()
 		if !ok {
-			r.setOpening(false)
 			return nil
 		}
 		if word = r.endWord(); word != "" {
 			heard = make(chan string, 1)
 			r.heard = heard
 		}
-		ch := make(chan openResult, 1)
+		ch := make(chan openResult)
+		request := asr.StreamRequest{
+			SampleRate: asr.SampleRate,
+			Lang:       r.speechLang(),
+			Hints:      append([]string(nil), r.hints()...),
+			Prompt:     r.speechContext(),
+			LiveResult: r.settings.Audio.LiveResult,
+		}
 		go func() {
-			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult})
-			ch <- openResult{s, err}
+			r.logTiming("asr_open_started")
+			s, err := st.Open(r.ctx, request)
+			r.logTiming("asr_open_completed")
+			if r.ctx.Err() != nil {
+				if s != nil {
+					s.Close()
+				}
+				return
+			}
+			select {
+			case ch <- openResult{s, err}:
+			case <-r.ctx.Done():
+				if s != nil {
+					s.Close()
+				}
+			}
 		}()
 		return ch
 	}
+	startOpen := func() {
+		if openStarted || !r.resolved || r.init.split && r.needsSpeechHints() && !r.init.termsReady {
+			return
+		}
+		openStarted = true
+		openDone = open()
+		if openDone == nil {
+			openReturned = true
+			r.setOpening(false)
+			maybeWarm()
+		}
+	}
 
 	var (
-		openDone   chan openResult
-		stream     asr.Stream
 		finals     chan streamEnd
 		early      *streamEnd
-		stopCh     = r.stop
 		stopTimer  <-chan time.Time
 		captured   capResult
 		recordDone bool
@@ -195,7 +194,7 @@ func (r *run) listen() (string, bool) {
 			r.fail(p)
 			return "", false
 		}
-		openDone = open()
+		startOpen()
 	}
 	for !recordDone {
 		select {
@@ -204,20 +203,83 @@ func (r *run) listen() (string, bool) {
 			return "", false
 		case s := <-svcDone:
 			svcDone = nil
+			if r.ctx.Err() != nil || r.cancelled.Load() {
+				r.endCancelled(stream)
+				return "", false
+			}
 			if s.err != nil {
 				r.fail(ProblemOf(s.err))
 				return "", false
 			}
 			r.useServices(s)
-			r.warmLLM()
 			if p := r.lacks(); p != nil {
 				r.fail(p)
 				return "", false
 			}
-			openDone = open()
+			startOpen()
+		case result := <-r.init.asrDone:
+			r.init.asrDone = nil
+			if r.ctx.Err() != nil || r.cancelled.Load() {
+				r.endCancelled(stream)
+				return "", false
+			}
+			if result.Err != nil {
+				r.fail(ProblemOf(result.Err))
+				return "", false
+			}
+			if !r.useASRReadiness(result) {
+				r.endCancelled(stream)
+				return "", false
+			}
+			if p := r.lacks(); p != nil {
+				r.fail(p)
+				return "", false
+			}
+			startOpen()
+		case terms := <-r.init.termsDone:
+			r.init.termsDone = nil
+			if r.ctx.Err() != nil || r.cancelled.Load() {
+				r.endCancelled(stream)
+				return "", false
+			}
+			r.useTerms(terms)
+			r.maybeCleanupReady()
+			startOpen()
+			maybeWarm()
+		case snippets := <-r.init.snippetsDone:
+			r.init.snippetsDone = nil
+			if r.ctx.Err() != nil || r.cancelled.Load() {
+				r.endCancelled(stream)
+				return "", false
+			}
+			r.useSnippets(snippets)
+			r.maybeCleanupReady()
+			maybeWarm()
+		case result := <-r.init.llmDone:
+			r.init.llmDone = nil
+			if !r.useLLMReadiness(result) {
+				r.endCancelled(stream)
+				return "", false
+			}
+			maybeWarm()
+		case <-sceneDone:
+			sceneDone = nil
+			r.markSceneReady()
+			maybeWarm()
 		case o := <-openDone:
 			openDone = nil
+			openReturned = true
+			if r.ctx.Err() != nil || r.cancelled.Load() {
+				if o.st != nil {
+					o.st.Close()
+				}
+				r.endCancelled(stream)
+				return "", false
+			}
 			if o.err != nil {
+				if o.st != nil {
+					o.st.Close()
+				}
 				// As after Stop: what was recorded is kept, to Retry.
 				r.recognitionFailed = true
 				r.endFailed(r.asrProblem(o.err), nil)
@@ -226,6 +288,7 @@ func (r *run) listen() (string, bool) {
 			r.setOpening(false)
 			stream = o.st
 			finals = r.feed(stream)
+			maybeWarm()
 		case <-waitNote:
 			waitNote = nil
 			r.waitDue.Store(true)
@@ -308,16 +371,10 @@ func (r *run) listen() (string, bool) {
 	}
 	asrStart := r.now()
 
-	// The services, if they are still on their way.
-	if !r.resolved {
-		if !r.awaitServices() {
+	if r.init.split || !r.resolved {
+		if !r.awaitASRReadiness(stream, startOpen, &sceneDone) {
 			return "", false
 		}
-		if p := r.lacks(); p != nil {
-			r.fail(p)
-			return "", false
-		}
-		openDone = open()
 	}
 
 	// Recognition.
@@ -330,9 +387,30 @@ func (r *run) listen() (string, bool) {
 	if _, ok := r.streamer(); ok {
 		for openDone != nil {
 			select {
+			case <-r.ctx.Done():
+				r.endCancelled(stream)
+				return "", false
+			case <-sceneDone:
+				sceneDone = nil
+				if r.cancelled.Load() || r.ctx.Err() != nil {
+					r.endCancelled(stream)
+					return "", false
+				}
+				r.markSceneReady()
 			case o := <-openDone:
 				openDone = nil
+				openReturned = true
+				if r.ctx.Err() != nil || r.cancelled.Load() {
+					if o.st != nil {
+						o.st.Close()
+					}
+					r.endCancelled(stream)
+					return "", false
+				}
 				if o.err != nil {
+					if o.st != nil {
+						o.st.Close()
+					}
 					r.recognitionFailed = true
 					r.endFailed(r.asrProblem(o.err), nil)
 					return "", false
@@ -340,11 +418,16 @@ func (r *run) listen() (string, bool) {
 				r.setOpening(false)
 				stream = o.st
 				finals = r.feed(stream)
+				maybeWarm()
 			case <-waitNote:
 				waitNote = nil
 				r.waitDue.Store(true)
 				r.noteWait()
 			case <-actx.Done():
+				if r.ctx.Err() != nil || r.cancelled.Load() {
+					r.endCancelled(stream)
+					return "", false
+				}
 				r.recognitionFailed = true
 				r.endFailed(r.timeoutProblem(actx), nil)
 				return "", false
@@ -355,17 +438,20 @@ func (r *run) listen() (string, bool) {
 		case early != nil:
 			res, silent = early.res, early.silent
 		default:
-			select {
-			case e := <-finals:
-				res, err, silent = e.res, e.err, e.silent
-			case <-actx.Done():
-				err = r.ctxErr(actx)
+			end, ok := r.awaitStreamFinal(stream, finals, actx, &sceneDone)
+			if !ok {
+				return "", false
 			}
+			res, err, silent = end.res, end.err, end.silent
 		}
 		if err != nil {
 			salvaged = r.salvage(stream)
 		}
 		stream.Close()
+		if r.streamReaderDone != nil {
+			<-r.streamReaderDone
+			r.streamReaderDone = nil
+		}
 		if silent && r.typedOnly() {
 			return "", true
 		}
@@ -391,7 +477,12 @@ func (r *run) listen() (string, bool) {
 		}
 		sent := asr.Duration(upload, asr.SampleRate)
 		r.m.update(r, func(s *Snapshot) { s.Timings.Sent = sent })
-		res, err = ft.Transcribe(actx, asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), MaxBytes: r.settings.Audio.UploadMB << 20})
+		request := asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), MaxBytes: r.settings.Audio.UploadMB << 20}
+		var ok bool
+		res, err, ok = r.transcribeFile(actx, ft, request, &sceneDone)
+		if !ok {
+			return "", false
+		}
 		if err != nil && actx.Err() != nil {
 			err = r.ctxErr(actx)
 		}
@@ -403,6 +494,7 @@ func (r *run) listen() (string, bool) {
 		return "", false
 	}
 	asrTime := r.now().Sub(asrStart)
+	r.logTiming("asr_final_completed")
 	if err != nil {
 		r.recognitionFailed = true
 		// The error itself follows in endFailed's line (or the notice's).
@@ -446,85 +538,6 @@ func (r *run) salvage(st asr.Stream) string {
 func isCancelled(err error, stopped bool) bool {
 	var pe *proto.Error
 	return stopped && errors.As(err, &pe) && pe.Code == proto.CodeCancelled
-}
-
-// warmLLM sends the language model the shared part of the prompt this
-// session will send (the system prompt and the example turn) while the
-// user speaks, when the model keeps a prompt cache (llm.Prefiller): the
-// chat after the recording then evaluates little more than the
-// transcript. Transcribe's clean-up and Translate of speech only:
-// Rewrite's prompt depends on the selection, read meanwhile.
-func (r *run) warmLLM() {
-	p, ok := r.svc.LLM.(llm.Prefiller)
-	if !ok {
-		return
-	}
-	var in compose.Input
-	var skill llm.Skill
-	switch r.req.Kind {
-	case store.KindTranscribe:
-		if !r.transcribeCleanup() {
-			return
-		}
-		in, skill = r.transcribeInput(""), llm.SkillTranscribeEnhance
-	case store.KindTranslate:
-		in, skill = r.writeInput("", ""), llm.SkillTranslateText
-	default:
-		return
-	}
-	out, err := compose.Build(in)
-	if err != nil {
-		return
-	}
-	req := llm.Request{Skill: skill, Messages: llmMessages(out)}
-	go func() {
-		start := r.now()
-		if err := p.Prefill(r.ctx, req); err != nil && r.ctx.Err() == nil {
-			r.logf("info", "warming the language model up: %v", err)
-			return
-		}
-		r.logf("debug", "warmed the language model up in %v", r.now().Sub(start).Round(time.Millisecond))
-	}()
-}
-
-// transcribeInput is Transcribe's request to compose for raw, its
-// snippets' triggers marked for the model to keep (expandSnippets).
-func (r *run) transcribeInput(raw string) compose.Input {
-	f := r.settings.Features.Transcribe
-	text, marked := snippet.Mark(raw, r.snippets)
-	return compose.Input{
-		Task: compose.Transcribe, Cleanup: f.Cleanup, Structure: f.Structure, TaskPrompt: f.Prompt,
-		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages, Text: text, Snippets: len(marked) > 0,
-		Glossary: r.glossary(), Dictionary: PromptDictionary(r.settings),
-		Scene: r.composeScene(),
-	}
-}
-
-// glossary is the dictionary's enabled terms for the prompt, when the
-// settings send them.
-func (r *run) glossary() []compose.Term {
-	if !r.settings.Dictionary.Enabled || !r.settings.Dictionary.Glossary {
-		return nil
-	}
-	var out []compose.Term
-	for _, t := range r.terms {
-		if t.Enabled {
-			out = append(out, compose.Term{Term: t.Term, Aliases: t.Aliases})
-		}
-	}
-	return out
-}
-
-// typedOnly says whether the input box holds typed text for a recording
-// nothing was heard in: the session goes on, the text its instruction
-// (writeInput), instead of ending with "no speech".
-func (r *run) typedOnly() bool {
-	cfg := r.m.cfg
-	if !r.req.Box || cfg.BoxInput == nil {
-		return false
-	}
-	typed, _, err := cfg.BoxInput(r.ctx)
-	return err == nil && strings.TrimSpace(typed) != ""
 }
 
 // inScript writes recognised Chinese text in the script of dictation

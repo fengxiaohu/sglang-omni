@@ -109,6 +109,7 @@ func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Respo
 	if parent.Err() != nil || r.ctx.Err() != nil {
 		return llm.Response{}, context.Canceled
 	}
+	r.logTiming("llm_request_started")
 	resp, err := client.Chat(ctx, req)
 	if err == nil && resp.ImagesDropped && hint != "" {
 		// The model answered from the text alone: the card must not

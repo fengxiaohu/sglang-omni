@@ -38,12 +38,13 @@ type run struct {
 	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
 	// again), and skipped, stopped or rethink says which; the session goes
 	// on.
-	llmCtx      context.Context
-	llmStop     context.CancelFunc
-	skipped     atomic.Bool
-	stopped     atomic.Bool
-	rethink     atomic.Bool
-	cleanupWake chan struct{}
+	llmCtx                context.Context
+	llmStop               context.CancelFunc
+	firstCleanPublication atomic.Bool
+	skipped               atomic.Bool
+	stopped               atomic.Bool
+	rethink               atomic.Bool
+	cleanupWake           chan struct{}
 	// Cleanup arbitration is guarded by m.mu. Workers publish candidates
 	// here before waking the session owner; only the owner delivers one.
 	cleanupChoice           cleanupChoice
@@ -51,9 +52,13 @@ type run struct {
 	cleanupDeadline         time.Time
 	cleanupDeadlineNotified bool
 	cleanupGeneration       uint64
+	cleanupAttempt          uint64
 	cleanupWorkerRunning    bool
 	cleanupCandidate        *cleanupOutput
 	cleanupOutput           cleanupOutput
+	cleanDraftGeneration    uint64
+	cleanDraftAttempt       uint64
+	cleanDraftAt            time.Time
 	// think is the level the requests ask with: StartRequest.Thinking,
 	// then Rethink's (guarded by m.mu).
 	think    *llm.Thinking
@@ -73,11 +78,14 @@ type run struct {
 	onDraft      func(string)
 	own          Snapshot
 
-	svc      Services
-	terms    []store.Term
-	snippets []snippet.Snippet
-	// svcDone gets the services, resolved meanwhile; resolved once r.svc
-	// holds them.
+	svc         Services
+	terms       []store.Term
+	snippets    []snippet.Snippet
+	speechHints []string
+	init        runInitialization
+	// svcDone gets the compatibility resolver result. On split Transcribe
+	// sessions, resolved means the speech lane is ready; cleanup state is
+	// published separately by the session owner.
 	svcDone  chan svcResult
 	resolved bool
 	sc       sceneState // app enhancement (scene.go)
@@ -94,6 +102,7 @@ type run struct {
 	// opening: the speech model is still starting (wait.go); waitDue:
 	// Config.WaitNote has passed since the start.
 	opening, waitDue atomic.Bool
+	firstPCMCaptured atomic.Bool
 	// dsp and gainDB are what the sound processing did (noteDSP), for a
 	// retry's entry.
 	dsp    string
@@ -110,9 +119,10 @@ type run struct {
 	// heard takes the stream's live texts to the recording loop while it
 	// listens for the end word (endword.go); nil otherwise.
 	heard chan string
-	// svcResolved is closed when the session's services are resolved
-	// (useServices): the early clean-up's worker waits for it (and r.ctx).
-	svcResolved chan struct{}
+	// svcResolved is closed when cleanup dependencies are ready: the early
+	// cleanup worker waits for it (and r.ctx).
+	svcResolved      chan struct{}
+	streamReaderDone chan struct{}
 	// early cleans finalized speech stretches before Stop (earlyclean.go).
 	earlyMu sync.Mutex
 	early   *earlyClean
@@ -224,6 +234,7 @@ func (r *run) main() {
 		return
 	}
 	r.logf("info", "start %s in %s", kind, r.req.Target.BundleID)
+	r.logTiming("session_started")
 	// Rewrite's window picture waits for the clipboard's: the copied
 	// picture wins, and a picture that will not be sent is never taken.
 	if kind != store.KindRewrite {
@@ -277,10 +288,20 @@ func (r *run) main() {
 	if !ok {
 		return
 	}
+	if r.init.split && !r.awaitTranscribeData() {
+		return
+	}
 	text := r.spoken(raw)
 	switch kind {
 	case store.KindTranscribe:
 		if !r.insertSnippet(text) {
+			if r.init.split && !r.awaitCleanupReadiness() {
+				if r.ctx.Err() != nil || r.cancelled.Load() {
+					return
+				}
+				r.finish(Done, nil, r.expandSnippets(text, text), r.transcribeOpts())
+				return
+			}
 			r.transcribe(text)
 		}
 	case store.KindTranslate:
@@ -297,30 +318,6 @@ func (r *run) main() {
 		}
 		r.write(text, sel)
 	}
-}
-
-// resolve opens the session's services and reads the dictionary,
-// meanwhile, into a new svcDone (an earlier resolve's result is
-// dropped); speech: as Resolver's.
-func (r *run) resolve(speech bool) {
-	cfg := r.m.cfg
-	done := make(chan svcResult, 1)
-	r.svcDone = done
-	go func() {
-		svc, err := r.resolveServices(speech)
-		var terms []store.Term
-		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
-			terms, _ = cfg.Glossary(r.ctx)
-		}
-		var snippets []snippet.Snippet
-		if err == nil && cfg.Snippets != nil {
-			snippets, _ = cfg.Snippets(r.ctx) // none read: none applied
-		}
-		if r.ctx.Err() != nil {
-			return
-		}
-		done <- svcResult{svc, terms, snippets, err}
-	}()
 }
 
 // finishOpts say how a result is delivered: card, when set, sends it to
@@ -349,7 +346,9 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		noted = true
 	case o.card != "":
 		dres.Reason = o.card
-		r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true })
+		if r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true }) {
+			r.noteVisibleCleanupResult(result)
+		}
 	default:
 		if r.req.Kind == store.KindTranscribe {
 			if !r.m.beginTranscribeDelivery(r, result) {
@@ -358,6 +357,7 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 				r.endCancelled(nil)
 				return
 			}
+			r.noteVisibleCleanupResult(result)
 		} else {
 			r.m.update(r, func(s *Snapshot) { s.State, s.Result = Delivering, result })
 		}
@@ -366,6 +366,9 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		dres = deliver.Insert(ctx, cfg.Text, deliver.Request{Text: result, Target: r.req.Target, Press: press, Self: cfg.Self, Activate: cfg.Activate,
 			Replace: o.replace, VerifyMS: deliver.DefaultVerifyMS, Stop: r.ctx, KeepClipboard: r.settings.General.CopyResult})
 		cancel()
+		if dres.Inserted {
+			r.logTiming("paste_completed")
+		}
 		if r.cancelled.Load() && errors.Is(dres.Err, context.Canceled) {
 			// Cancelled before the paste was sent: nothing went in.
 			r.endCancelled(nil)
@@ -392,6 +395,7 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	if r.asrDegraded != nil && (problem == nil || problem.Degraded) {
 		problem = r.asrDegraded
 	}
+	r.logTiming("delivery_completed")
 	snap := r.m.snapshot(r)
 	total := r.now().Sub(snap.StartedAt)
 	var highlights []dict.Span

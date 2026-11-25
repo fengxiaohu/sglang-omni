@@ -43,7 +43,8 @@ type fakeAudio struct {
 	tick     time.Duration
 	startErr error // Record fails before any audio
 	maxFrame int   // the recording ends by itself after this many frames (0: never)
-	failAt   int   // after this many frames Record fails with failErr
+	maxDone  chan struct{}
+	failAt   int // after this many frames Record fails with failErr
 	failErr  error
 	deaf     bool // ignore Stop (a capture.stop that raced its start)
 	quiet    bool // nobody speaks: quietFrame instead of frame
@@ -58,8 +59,9 @@ type fakeAudio struct {
 	// in 100 ms frames (the last one may be short), drained closes once
 	// the last frame was delivered, and the recording then waits for
 	// Stop, as the helper's file input does.
-	file    []byte
-	drained chan struct{}
+	file     []byte
+	fileTick time.Duration
+	drained  chan struct{}
 	// notified closes once notifyAt frames were sent (0: never).
 	notifyAt int
 	notified chan struct{}
@@ -105,14 +107,32 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 	fn(AudioEvent{Started: &proto.CaptureStartedParams{Job: id, DeviceName: "MacBook Air Microphone", SampleRate: 16000}})
 	n := 0
 	if len(f.file) > 0 {
+		var ticker *time.Ticker
+		var ticks <-chan time.Time
+		if f.fileTick > 0 {
+			ticker = time.NewTicker(f.fileTick)
+			defer ticker.Stop()
+			ticks = ticker.C
+		}
 		for off := 0; off < len(f.file); off += len(frame) {
+			if ticks != nil {
+				select {
+				case <-ctx.Done():
+					return proto.CaptureResult{}, &proto.Error{Code: proto.CodeCancelled, Message: "cancelled"}
+				case <-stop:
+					return proto.CaptureResult{Reason: proto.CaptureStopped, Frames: n}, nil
+				case <-ticks:
+				}
+			}
 			fn(AudioEvent{PCM: &proto.PCMParams{Job: id, Seq: n, Data: f.file[off:min(off+len(frame), len(f.file))]}})
 			n++
 		}
 		f.mu.Lock()
 		f.frames = n
 		f.mu.Unlock()
-		close(f.drained)
+		if f.drained != nil {
+			close(f.drained)
+		}
 		select {
 		case <-ctx.Done():
 			return proto.CaptureResult{}, &proto.Error{Code: proto.CodeCancelled, Message: "cancelled"}
@@ -149,6 +169,9 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 				return proto.CaptureResult{}, f.failErr
 			}
 			if (f.maxFrame > 0 && n == f.maxFrame) || (p.MaxSeconds > 0 && float64(n) >= p.MaxSeconds*10) { // 100 ms frames
+				if f.maxDone != nil && f.maxFrame > 0 && n == f.maxFrame {
+					close(f.maxDone)
+				}
 				return proto.CaptureResult{Reason: proto.CaptureMaxSeconds, Frames: n}, nil
 			}
 		}
@@ -340,7 +363,11 @@ func (s *fakeStream) Finish() error {
 		}
 	}
 	if s.f.finishGate != nil {
-		<-s.f.finishGate
+		select {
+		case <-s.f.finishGate:
+		case <-s.ctx.Done():
+			return &asr.Error{Kind: asr.KindCancelled, Detail: s.ctx.Err().Error()}
+		}
 	}
 	switch {
 	case s.f.hang:
@@ -367,10 +394,12 @@ func (s *fakeStream) Events() <-chan asr.Event { return s.events }
 
 // fakeFile transcribes whole recordings.
 type fakeFile struct {
-	text string
-	said string // the language it reports (asr.Result.Lang)
-	err  error
-	hang bool
+	text              string
+	said              string // the language it reports (asr.Result.Lang)
+	err               error
+	hang              bool
+	transcribeGate    <-chan struct{}
+	transcribeStarted chan<- struct{}
 
 	mu     sync.Mutex
 	calls  int
@@ -390,6 +419,19 @@ func (f *fakeFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Res
 	f.audio = req.Audio
 	f.lang, f.prompt, f.most = req.Lang, req.Prompt, req.MaxBytes
 	f.mu.Unlock()
+	if f.transcribeStarted != nil {
+		select {
+		case f.transcribeStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.transcribeGate != nil {
+		select {
+		case <-f.transcribeGate:
+		case <-ctx.Done():
+			return asr.Result{}, &asr.Error{Kind: asr.KindCancelled, Detail: ctx.Err().Error()}
+		}
+	}
 	if f.hang {
 		<-ctx.Done()
 		return asr.Result{}, &asr.Error{Kind: asr.KindCancelled, Detail: ctx.Err().Error()}
@@ -633,7 +675,7 @@ func (r *recorder) wait(t *testing.T) Snapshot {
 }
 
 // waitFor waits until a snapshot satisfies ok.
-func (r *recorder) waitFor(t *testing.T, what string, ok func(Snapshot) bool) Snapshot {
+func (r *recorder) waitFor(t testing.TB, what string, ok func(Snapshot) bool) Snapshot {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
