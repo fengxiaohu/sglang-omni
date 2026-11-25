@@ -41,7 +41,9 @@ func (r *run) useServices(s svcResult) {
 	r.svc.LLM, r.svc.LLMInfo = s.svc.LLM, s.svc.LLMInfo
 	r.svc.Fallback, r.svc.FallbackInfo = s.svc.Fallback, s.svc.FallbackInfo
 	r.terms, r.snippets = s.terms, s.snippets
-	r.speechHints = SpeechHints(r.settings, s.terms)
+	if r.needsSpeechHints() {
+		r.speechHints = SpeechHints(r.settings, s.terms)
+	}
 	close(r.svcResolved)
 	up := uploadLen(s.svc.ASR, r.settings.Audio.UploadMB)
 	r.m.update(r, func(sn *Snapshot) { sn.ASR, sn.LLM, sn.UploadLen = s.svc.ASRInfo, s.svc.LLMInfo, up })
@@ -164,12 +166,10 @@ func (r *run) listen() (string, bool) {
 		stopCh       = r.stop
 		sceneDone    <-chan struct{}
 	)
-	if r.init.split && !r.init.sceneReady {
-		sceneDone = r.sc.done
-	}
+	sceneDone = r.sceneReadySignal()
 	maybeWarm := func() {
 		cleanupReady := !r.init.split || r.init.cleanupReady
-		if warmed || !openReturned || openDone != nil || !cleanupReady {
+		if warmed || !openReturned || openDone != nil || !cleanupReady || r.init.split && !r.init.cleanupRequested || r.svc.LLM == nil {
 			return
 		}
 		warmed = true
@@ -185,9 +185,16 @@ func (r *run) listen() (string, bool) {
 			r.heard = heard
 		}
 		ch := make(chan openResult)
-		r.logTiming("asr_open_started")
+		request := asr.StreamRequest{
+			SampleRate: asr.SampleRate,
+			Lang:       r.speechLang(),
+			Hints:      append([]string(nil), r.hints()...),
+			Prompt:     r.speechContext(),
+			LiveResult: r.settings.Audio.LiveResult,
+		}
 		go func() {
-			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult})
+			r.logTiming("asr_open_started")
+			s, err := st.Open(r.ctx, request)
 			r.logTiming("asr_open_completed")
 			if r.ctx.Err() != nil {
 				if s != nil {
@@ -239,7 +246,7 @@ func (r *run) listen() (string, bool) {
 		}
 		startOpen()
 	}
-	for !recordDone || r.init.split && (!r.resolved || r.needsSpeechHints() && !r.init.termsReady) {
+	for !recordDone {
 		select {
 		case <-r.ctx.Done():
 			r.endCancelled(stream)
@@ -307,8 +314,7 @@ func (r *run) listen() (string, bool) {
 			maybeWarm()
 		case <-sceneDone:
 			sceneDone = nil
-			r.init.sceneReady = true
-			r.maybeCleanupReady()
+			r.markSceneReady()
 			maybeWarm()
 		case o := <-openDone:
 			openDone = nil
@@ -415,16 +421,10 @@ func (r *run) listen() (string, bool) {
 	}
 	asrStart := r.now()
 
-	// The services, if they are still on their way.
-	if !r.resolved {
-		if !r.awaitServices() {
+	if r.init.split || !r.resolved {
+		if !r.awaitASRReadiness(stream, startOpen) {
 			return "", false
 		}
-		if p := r.lacks(); p != nil {
-			r.fail(p)
-			return "", false
-		}
-		startOpen()
 	}
 
 	// Recognition.
@@ -492,6 +492,10 @@ func (r *run) listen() (string, bool) {
 			salvaged = r.salvage(stream)
 		}
 		stream.Close()
+		if r.streamReaderDone != nil {
+			<-r.streamReaderDone
+			r.streamReaderDone = nil
+		}
 		if silent && r.typedOnly() {
 			return "", true
 		}
