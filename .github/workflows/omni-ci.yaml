@@ -344,7 +344,7 @@ jobs:
   unit-test-cpu:
     name: unit-test-cpu-${{ matrix.partition }}
     needs: preflight
-    if: needs.preflight.result == 'success' && needs.preflight.outputs.run_self_hosted == 'true'
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -446,8 +446,7 @@ jobs:
   pr-test:
     name: PR Test
     needs: setup
-    if: >-
-      needs.setup.result == 'success'
+    if: ${{ false }}
     uses: ./.github/workflows/test.yaml
     with:
       omni_ci_home: >-

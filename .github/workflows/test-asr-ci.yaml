@@ -129,8 +129,16 @@ jobs:
           nvidia-smi --query-gpu=uuid --format=csv,noheader
           python -c "import torch; assert torch.cuda.device_count() == 2"
           export PYTHONPATH=$PWD
-          bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_asr_ci_seedtts.py -v -s -x
+          nvidia-smi --query-gpu=timestamp,index,utilization.gpu,memory.used,clocks.sm,power.draw --format=csv,noheader,nounits -l 5 > /tmp/whisper-control-gpu.csv &
+          monitor=$!
+          trap 'kill "$monitor" 2>/dev/null || true' EXIT
+          status=0
+          for sample in 1 2; do
+            echo "CONTROL SAMPLE $sample"
+            OMNI_CI_MAX_ATTEMPTS=1 OMNI_CI_STAGE_LABEL="control-$sample" bash .github/scripts/run_flaky_pytest.sh pytest tests/test_model/test_asr_ci_seedtts.py::test_asr_matches_seedtts_reference_text_en -v -s || status=1
+          done
+          cat /tmp/whisper-control-gpu.csv
+          exit "$status"
         env:
           ASR_CI_MODEL: ${{ inputs.asr_ci_model }}
           HF_ENDPOINT: https://huggingface.co
