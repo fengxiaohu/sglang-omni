@@ -173,3 +173,8 @@ type Backend interface {
 type Prefiller interface {
 	Prefill(ctx context.Context, req Request) error
 }
+
+// PrefillCapability separates a client wrapper from a backend that can prefill.
+type PrefillCapability interface {
+	CanPrefill() bool
+}
