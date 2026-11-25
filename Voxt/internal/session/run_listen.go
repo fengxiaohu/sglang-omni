@@ -77,59 +77,6 @@ func (r *run) lacks() *Problem {
 	return nil
 }
 
-// readSelection reads the selected text of the app in front (Translate,
-// Rewrite) and puts it in the snapshot; "" for none, or when it could
-// not be read (the session goes on without one).
-func (r *run) readSelection() string {
-	defer r.m.update(r, func(s *Snapshot) { s.ReadingSelection = false })
-	cfg := r.m.cfg
-	timeout, params := cfg.ReadTimeout, proto.SelectionParams{AllowCopy: AllowCopy(r.req.Target.BundleID)}
-	if r.req.Kind == store.KindRewrite {
-		timeout, params.CopyTimeoutMS = cfg.RewriteReadTimeout, rewriteCopyMS
-	}
-	ctx, cancel := context.WithTimeout(r.ctx, timeout)
-	defer cancel()
-	res, err := cfg.Select.Selection(ctx, params)
-	if err != nil {
-		if r.ctx.Err() == nil {
-			r.logf("warning", "reading the selection: %v", err)
-		}
-		return ""
-	}
-	text := res.Text
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		// The helper's steps say which reading found nothing (#3835).
-		r.logf("info", "no selection (%s, %.0f ms; %s)", res.Via, res.MS, strings.Join(res.Steps, ", "))
-		return ""
-	}
-	if r.req.Kind == store.KindRewrite && !r.settings.Privacy.SendClipboardImage {
-		r.clip = nil
-	} else if r.req.Kind == store.KindRewrite {
-		switch {
-		case len(res.Image) > 0 && (trimmed == "[Image]" || r.settings.Privacy.SendClipboardImageWithSelection):
-			// The copy fallback returns the newly selected image before it
-			// restores the clipboard, never an earlier copied image.
-			r.clip = res.Image
-		case trimmed == "[Image]" || !r.settings.Privacy.SendClipboardImageWithSelection:
-			// Text takes the text path by default. A placeholder without a
-			// newly decoded image never revives the earlier clipboard image.
-			r.clip = nil
-		}
-	}
-	for _, t := range r.req.Previous {
-		// A follow-up's: the text selected before, still selected, is in
-		// the conversation already (#3816).
-		if strings.TrimSpace(t.Selection) == trimmed {
-			r.logf("info", "the selection is in the conversation already")
-			return ""
-		}
-	}
-	r.logf("info", "selection: %s via %s in %.0f ms", r.logText(text), res.Via, res.MS)
-	r.m.update(r, func(s *Snapshot) { s.Selection, s.SelectionVia = text, res.Via })
-	return text
-}
-
 // listen records and recognises: the recognised text, or false when the
 // session ended (cancelled, failed, too short, nothing heard).
 func (r *run) listen() (string, bool) {
@@ -169,11 +116,14 @@ func (r *run) listen() (string, bool) {
 	sceneDone = r.sceneReadySignal()
 	maybeWarm := func() {
 		cleanupReady := !r.init.split || r.init.cleanupReady
-		if warmed || !openReturned || openDone != nil || !cleanupReady || r.init.split && !r.init.cleanupRequested || r.svc.LLM == nil {
+		if warmed || !openReturned || openDone != nil || !cleanupReady || r.sceneReadySignal() != nil || r.init.split && !r.init.cleanupRequested || r.svc.LLM == nil {
 			return
 		}
 		warmed = true
-		go r.warmLLM()
+		prefiller, ctx, request, ok := r.prepareWarmup()
+		if ok {
+			go prefiller.Prefill(ctx, request)
+		}
 	}
 	open := func() chan openResult {
 		st, ok := r.streamer()
@@ -422,7 +372,7 @@ func (r *run) listen() (string, bool) {
 	asrStart := r.now()
 
 	if r.init.split || !r.resolved {
-		if !r.awaitASRReadiness(stream, startOpen) {
+		if !r.awaitASRReadiness(stream, startOpen, &sceneDone) {
 			return "", false
 		}
 	}
@@ -440,6 +390,13 @@ func (r *run) listen() (string, bool) {
 			case <-r.ctx.Done():
 				r.endCancelled(stream)
 				return "", false
+			case <-sceneDone:
+				sceneDone = nil
+				if r.cancelled.Load() || r.ctx.Err() != nil {
+					r.endCancelled(stream)
+					return "", false
+				}
+				r.markSceneReady()
 			case o := <-openDone:
 				openDone = nil
 				openReturned = true
@@ -481,12 +438,11 @@ func (r *run) listen() (string, bool) {
 		case early != nil:
 			res, silent = early.res, early.silent
 		default:
-			select {
-			case e := <-finals:
-				res, err, silent = e.res, e.err, e.silent
-			case <-actx.Done():
-				err = r.ctxErr(actx)
+			end, ok := r.awaitStreamFinal(stream, finals, actx, &sceneDone)
+			if !ok {
+				return "", false
 			}
+			res, err, silent = end.res, end.err, end.silent
 		}
 		if err != nil {
 			salvaged = r.salvage(stream)
@@ -521,7 +477,12 @@ func (r *run) listen() (string, bool) {
 		}
 		sent := asr.Duration(upload, asr.SampleRate)
 		r.m.update(r, func(s *Snapshot) { s.Timings.Sent = sent })
-		res, err = ft.Transcribe(actx, asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), MaxBytes: r.settings.Audio.UploadMB << 20})
+		request := asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), MaxBytes: r.settings.Audio.UploadMB << 20}
+		var ok bool
+		res, err, ok = r.transcribeFile(actx, ft, request, &sceneDone)
+		if !ok {
+			return "", false
+		}
 		if err != nil && actx.Err() != nil {
 			err = r.ctxErr(actx)
 		}

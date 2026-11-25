@@ -238,7 +238,7 @@ func (r *run) cleanTranscribe(text string, request cleanupRequest) cleanupOutput
 	for {
 		if nextRequest, ok := r.takeRethink(); ok {
 			request = nextRequest
-			output = r.cleanUpOutputContext(text, request.thinking, request.ctx)
+			output = r.cleanUpOutputContextGeneration(text, request.thinking, request.ctx, request.generation)
 			output.generation = request.generation
 			continue
 		}
@@ -261,7 +261,7 @@ func (r *run) cleanTranscribe(text string, request cleanupRequest) cleanupOutput
 			continue
 		}
 		request = nextRequest
-		output = r.cleanUpOutputContext(text, request.thinking, request.ctx)
+		output = r.cleanUpOutputContextGeneration(text, request.thinking, request.ctx, request.generation)
 		output.generation = request.generation
 	}
 }
@@ -305,7 +305,7 @@ func (r *run) cleanUpFirstContext(text string, request cleanupRequest) cleanupOu
 			if livePath && !r.publishCleanupDraft(request, "") {
 				return cleanupOutput{text: text, completedAt: r.now()}
 			}
-			return r.cleanUpOutputContext(text, nil, request.ctx)
+			return r.cleanUpOutputContextGeneration(text, nil, request.ctx, request.generation)
 		}
 		before = liveContext(compose.JoinParts(parts, answers))
 		tail = joinRedo(redo, tail)
@@ -330,7 +330,7 @@ func (r *run) cleanUpFirstContext(text string, request cleanupRequest) cleanupOu
 	if err != nil {
 		return cleanupOutput{text: text, err: err, completedAt: r.now()}
 	}
-	result, profile, err := r.cleanPartsContext(text, append(parts, tailParts...), answers, nil, request.ctx)
+	result, profile, err := r.cleanPartsContextGeneration(text, append(parts, tailParts...), answers, nil, request.ctx, request.generation)
 	if err == nil {
 		err = failed
 	}
@@ -377,6 +377,10 @@ func (r *run) cleanUpOutput(text string, think *llm.Thinking) cleanupOutput {
 }
 
 func (r *run) cleanUpOutputContext(text string, think *llm.Thinking, ctx context.Context) cleanupOutput {
+	return r.cleanUpOutputContextGeneration(text, think, ctx, 0)
+}
+
+func (r *run) cleanUpOutputContextGeneration(text string, think *llm.Thinking, ctx context.Context, generation uint64) cleanupOutput {
 	parts, err := compose.BuildParts(r.transcribeInput(text))
 	if err != nil {
 		return cleanupOutput{text: text, err: err, completedAt: r.now()}
@@ -384,7 +388,7 @@ func (r *run) cleanUpOutputContext(text string, think *llm.Thinking, ctx context
 	if len(parts) > 1 {
 		r.logf("info", "cleaning up %d characters in %d pieces", len([]rune(text)), len(parts))
 	}
-	result, profile, err := r.cleanPartsContext(text, parts, nil, think, ctx)
+	result, profile, err := r.cleanPartsContextGeneration(text, parts, nil, think, ctx, generation)
 	return cleanupOutput{text: result, profile: profile, err: err, completedAt: r.now()}
 }
 
@@ -399,13 +403,17 @@ func (r *run) cleanParts(text string, parts []compose.Part, answers []string, th
 }
 
 func (r *run) cleanPartsContext(text string, parts []compose.Part, answers []string, think *llm.Thinking, ctx context.Context) (string, string, error) {
+	return r.cleanPartsContextGeneration(text, parts, answers, think, ctx, 0)
+}
+
+func (r *run) cleanPartsContextGeneration(text string, parts []compose.Part, answers []string, think *llm.Thinking, ctx context.Context, generation uint64) (string, string, error) {
 	var failed error
 	for i := len(answers); i < len(parts); i++ {
 		p := parts[i]
 		if !r.cleanupMayContinue() {
 			return text, p.Profile(), context.DeadlineExceeded
 		}
-		draft := newDrafter(r, ctx, parts[:i+1], answers)
+		draft := newDrafter(r, ctx, parts[:i+1], answers, generation)
 		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, InputChars: utf8.RuneCountInString(text), OnDelta: draft.add}
 		resp, err := r.llmChatContext(ctx, r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
 		switch {
@@ -443,16 +451,17 @@ func llmMessages(out compose.Output) []llm.Message {
 // drafter streams the clean-up of a part into the snapshot's Draft,
 // after the answers of the parts before it, every draftEvery at most.
 type drafter struct {
-	r       *run
-	ctx     context.Context
-	parts   []compose.Part
-	answers []string
-	buf     strings.Builder
-	last    time.Time
+	r          *run
+	ctx        context.Context
+	generation uint64
+	parts      []compose.Part
+	answers    []string
+	buf        strings.Builder
+	last       time.Time
 }
 
-func newDrafter(r *run, ctx context.Context, parts []compose.Part, answers []string) *drafter {
-	return &drafter{r: r, ctx: ctx, parts: parts, answers: answers[:len(answers):len(answers)]}
+func newDrafter(r *run, ctx context.Context, parts []compose.Part, answers []string, generation uint64) *drafter {
+	return &drafter{r: r, ctx: ctx, generation: generation, parts: parts, answers: answers[:len(answers):len(answers)]}
 }
 
 func (d *drafter) add(delta string) {
@@ -476,7 +485,12 @@ func (d *drafter) publish() {
 	part := d.parts[len(d.parts)-1]
 	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text)))
 	draft = d.r.draftSnippets(draft, d.parts)
+	if strings.TrimSpace(draft) == "" {
+		return
+	}
+	raw := ""
 	visible := d.r.m.updateIf(d.r, func(s *Snapshot) bool {
+		raw = s.Raw
 		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.r.cleanupDecisionOpenLocked() {
 			s.Draft = draft
 			return draft != ""
@@ -484,7 +498,7 @@ func (d *drafter) publish() {
 		return false
 	})
 	if visible {
-		d.r.noteVisibleCleanupText()
+		d.r.noteCleanDraftPublication(d.generation, d.r.now(), draft, raw)
 	}
 }
 
@@ -495,7 +509,12 @@ func (d *drafter) done(answers []string) {
 	}
 	draft := compose.JoinParts(d.parts, answers)
 	draft = d.r.draftSnippets(draft, d.parts)
+	if strings.TrimSpace(draft) == "" {
+		return
+	}
+	raw := ""
 	visible := d.r.m.updateIf(d.r, func(s *Snapshot) bool {
+		raw = s.Raw
 		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.r.cleanupDecisionOpenLocked() {
 			s.Draft = draft
 			return draft != ""
@@ -503,7 +522,7 @@ func (d *drafter) done(answers []string) {
 		return false
 	})
 	if visible {
-		d.r.noteVisibleCleanupText()
+		d.r.noteCleanDraftPublication(d.generation, d.r.now(), draft, raw)
 	}
 }
 
