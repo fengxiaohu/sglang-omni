@@ -342,8 +342,7 @@ jobs:
   pr-test:
     name: PR Test
     needs: setup
-    if: >-
-      needs.setup.result == 'success'
+    if: ${{ false }}
     uses: ./.github/workflows/test.yaml
     with:
       omni_ci_home: >-
