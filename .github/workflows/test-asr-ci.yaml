@@ -43,19 +43,19 @@ jobs:
   moss-td-multi-speaker:
     name: MOSS-TD multi-speaker
     if: inputs.run_multi_speaker
-    runs-on: [self-hosted, h100]
+    runs-on: [self-hosted, pr4578-ab]
     # movies800 + stream + aishell4_long + googletime on DP=2.
     timeout-minutes: 90
     container:
-      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+      image: docker.io/hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
         -e OMNI_CI_CPUSET
         -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/ci:/data/omni-ci
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/hf:/github/home/.cache/huggingface
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/hf:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -100,18 +100,19 @@ jobs:
   seedtts:
     name: SeedTTS ASR
     if: inputs.run_seedtts
-    runs-on: [self-hosted, h100]
+    runs-on: [self-hosted, pr4578-ab, slot-0]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+      image: docker.io/hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
+        --device nvidia.com/gpu=GPU-8c2e7fe8-6622-46fc-374a-1b0bea3c1a31
         -e NVIDIA_VISIBLE_DEVICES
         -e OMNI_CI_CPUSET
         -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/ci:/data/omni-ci
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/hf:/github/home/.cache/huggingface
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/hf:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -124,6 +125,9 @@ jobs:
         shell: bash
         run: |
           source omni/bin/activate
+          export CUDA_VISIBLE_DEVICES=0,1
+          nvidia-smi --query-gpu=uuid --format=csv,noheader
+          python -c "import torch; assert torch.cuda.device_count() == 2"
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/test_model/test_asr_ci_seedtts.py -v -s -x

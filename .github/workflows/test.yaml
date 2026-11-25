@@ -23,7 +23,7 @@ env:
 jobs:
   unit-test:
     name: ${{ matrix.name }}
-    runs-on: [self-hosted, h100]
+    runs-on: [self-hosted, pr4578-ab]
     strategy:
       fail-fast: false
       matrix:
@@ -35,15 +35,15 @@ jobs:
           - name: unit-test-c
             partition: 2
     container:
-      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+      image: docker.io/hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
         -e OMNI_CI_CPUSET
         -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/ci:/data/omni-ci
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/hf:/github/home/.cache/huggingface
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/hf:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -72,7 +72,7 @@ jobs:
 
   unit-test-accelerator:
     name: ${{ matrix.name }}
-    runs-on: [self-hosted, h100]
+    runs-on: [self-hosted, pr4578-ab]
     strategy:
       fail-fast: false
       matrix:
@@ -82,15 +82,15 @@ jobs:
           - name: unit-test-accelerator-b
             partition: 1
     container:
-      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
+      image: docker.io/hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
         -e OMNI_CI_CPUSET
         -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/ci:/data/omni-ci
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/hf:/github/home/.cache/huggingface
+        -v /data/fengxiaohu/home/pr4578-pair3.03GmVkPW/whisper/base/hf:/root/.cache/huggingface
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
