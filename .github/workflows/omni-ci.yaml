@@ -44,7 +44,7 @@ jobs:
               samples.append(perf_counter() - start)
           print("Python compile seconds", samples, median(samples))
           with open(os.environ["GITHUB_ENV"], "a") as environment:
-              print(f"CPU_PYTEST_WORKERS={2 if median(samples) >= 0.053 else 0}", file=environment)
+              print(f"CPU_PYTEST_WORKERS={3 if median(samples) >= 0.047 else 2}", file=environment)
           PY
 
       - uses: astral-sh/setup-uv@v6
