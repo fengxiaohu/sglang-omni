@@ -11,10 +11,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        round: [2, 3]
+        round: [0]
         partition: [0, 1, 2, 3, 4, 5, 6, 7]
     env:
       CUDA_VISIBLE_DEVICES: ""
+      OMNI_CI_PRELOAD_SESSION_WORKERS: "1"
       UV_TORCH_BACKEND: cpu
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
