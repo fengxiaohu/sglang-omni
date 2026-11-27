@@ -66,4 +66,14 @@ jobs:
             -p scripts.ci.utils.pytest_partition \
             --auto-partition-id "${{ matrix.partition }}" \
             --auto-partition-size 2 \
-            --partition-model-file .github/unit_test_accelerator_durations.json
+            --partition-model-file .github/unit_test_accelerator_durations.json \
+            --partition-prefilter accelerator --junitxml="$RUNNER_TEMP/unit-test.xml"
+
+      - name: Upload partition results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: accelerator-partition-${{ matrix.partition }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/unit-test.xml
+            ${{ runner.temp }}/omni-ci-retry/

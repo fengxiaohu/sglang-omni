@@ -86,6 +86,21 @@ cleanup_between_attempts() {
   fi
 }
 
+command=("$@")
+junit_final_path=""
+junit_index=0
+for ((index=1; index<${#command[@]}; index++)); do
+  case "${command[index]}" in
+    --) break ;;
+    --junitxml=*) junit_final_path="${command[index]#*=}"; junit_index=$index ;;
+    --junitxml)
+      index=$((index + 1))
+      junit_final_path="${command[index]:-}"
+      junit_index=$index
+      ;;
+  esac
+done
+
 attempt=1
 last_status=0
 
@@ -93,9 +108,20 @@ while [ "${attempt}" -le "${max_attempts}" ]; do
   log_file="${log_root}/${slug}-attempt-${attempt}.log"
 
   echo "::group::${stage_label} attempt ${attempt}/${max_attempts}"
-  OMNI_CI_ATTEMPT="${attempt}" "$@" 2>&1 | tee "${log_file}"
+  if [ -n "${junit_final_path}" ]; then
+    junit_attempt_path="${log_root}/${slug}-attempt-${attempt}.xml"
+    if [[ "${command[junit_index]}" == --junitxml=* ]]; then
+      command[junit_index]="--junitxml=${junit_attempt_path}"
+    else
+      command[junit_index]="${junit_attempt_path}"
+    fi
+  fi
+  OMNI_CI_ATTEMPT="${attempt}" "${command[@]}" 2>&1 | tee "${log_file}"
   last_status="${PIPESTATUS[0]}"
   echo "::endgroup::"
+  if [ -n "${junit_final_path}" ] && [ -f "${junit_attempt_path}" ]; then
+    mkdir -p "$(dirname "${junit_final_path}")" && cp "${junit_attempt_path}" "${junit_final_path}" || exit 1
+  fi
 
   if [ "${last_status}" -eq 0 ]; then
     if [ "${attempt}" -gt 1 ]; then

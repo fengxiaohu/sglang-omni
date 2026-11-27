@@ -435,7 +435,7 @@ jobs:
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/ -v -m "not benchmark and not accelerator" -x \
             -p scripts.ci.utils.pytest_partition --auto-partition-id "$PARTITION" \
-            --auto-partition-size "$PARTITIONS" --partition-model-file .github/unit_test_durations.json \
+            --partition-prefilter all --auto-partition-size "$PARTITIONS" --partition-model-file .github/unit_test_durations.json \
             --junitxml="$RUNNER_TEMP/unit-test.xml"
 
       - name: Upload partition results
