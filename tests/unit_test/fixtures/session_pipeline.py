@@ -9,12 +9,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import multiprocessing
+import os
 import threading
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from multiprocessing.context import SpawnProcess
+from multiprocessing.process import BaseProcess
 from multiprocessing.queues import Queue
 from multiprocessing.synchronize import Event
 from pathlib import Path
@@ -34,7 +35,7 @@ from sglang_omni.models.vad.session import VADHooks
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.replicas import expand_replica_stages
 from sglang_omni.pipeline.sessions import Session
-from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
@@ -332,8 +333,6 @@ VAD_FACTORY = f"{__name__}.make_vad_scheduler"
 
 
 def worker(spec: StageLaunchConfig, ready: Event) -> None:
-    from sglang_omni.pipeline.stage_workers import construct_stage
-
     async def run() -> None:
         stage = construct_stage(spec, logging.getLogger(__name__))
         await stage.start()
@@ -356,7 +355,7 @@ async def pipeline(
     factories: Mapping[str, str] | None = None,
     factory_kwargs: Mapping[str, object] | None = None,
     other_terminals: tuple[str, ...] = (),
-) -> AsyncIterator[tuple[Coordinator, Queue[StageEvent], list[SpawnProcess]]]:
+) -> AsyncIterator[tuple[Coordinator, Queue[StageEvent], list[BaseProcess]]]:
     """A linear route of synthetic stages, or with `names`, unchained terminal stages.
 
     `factories` replaces the synthetic hooks of the named stages with another
@@ -365,7 +364,12 @@ async def pipeline(
     """
     factories = factories or {}
     factory_kwargs = factory_kwargs or {}
-    ctx = multiprocessing.get_context("spawn")
+    if os.environ.get("OMNI_CI_PRELOAD_SESSION_WORKERS") == "1":
+        # note (fengxiaohu): Each synthetic stage needs fresh process state but can share the CPU dependency imports.
+        multiprocessing.set_forkserver_preload([__name__])
+        ctx = multiprocessing.get_context("forkserver")
+    else:
+        ctx = multiprocessing.get_context("spawn")
     is_chained = names is None
     names = names or (
         ["source", "middle", "sink"] if stage_count == 3 else ["source", "sink"]
@@ -470,7 +474,7 @@ def chunk(seq: int, eos: bool = False) -> TimedChunk:
 
 
 PipelineResources: TypeAlias = (
-    "tuple[Coordinator, Queue[StageEvent], list[SpawnProcess]]"
+    "tuple[Coordinator, Queue[StageEvent], list[BaseProcess]]"
 )
 
 
