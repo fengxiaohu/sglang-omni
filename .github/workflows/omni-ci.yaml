@@ -11,8 +11,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        round: [6, 7]
-        partition: [6, 7]
+        round: [8]
+        partition: [0, 1, 2, 3, 4, 5, 6, 7]
     env:
       CUDA_VISIBLE_DEVICES: ""
       OMNI_CI_PRELOAD_SESSION_WORKERS: "1"
@@ -97,6 +97,7 @@ jobs:
           python3 -c 'import tomllib; print("\n".join(tomllib.load(open("pyproject.toml", "rb"))["tool"]["uv"]["override-dependencies"]))' > "$RUNNER_TEMP/omni-overrides.txt"
           uv pip install --overrides "$RUNNER_TEMP/omni-overrides.txt" --find-links https://abetlen.github.io/llama-cpp-python/whl/cpu/llama-cpp-python/ \
             -e '.[audar-tts,fishaudio,fun-cosyvoice3,minicpm-o]'
+          uv pip install pytest-xdist==3.8.0
           uv pip install --no-deps qwen-tts==0.1.1
           bash .github/scripts/install_ci_cosyvoice.sh .venv
 
@@ -111,7 +112,7 @@ jobs:
           source .venv/bin/activate
           export PYTHONPATH="$PWD"
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ -v -m "not benchmark and not accelerator" -x \
+            pytest tests/ -n 2 --dist=loadfile -v -m "not benchmark and not accelerator" -x \
             -p scripts.ci.utils.pytest_partition --auto-partition-id "$PARTITION" \
             --partition-prefilter all --auto-partition-size "$PARTITIONS" --partition-model-file .github/unit_test_durations.json \
             --junitxml="$RUNNER_TEMP/unit-test.xml"
