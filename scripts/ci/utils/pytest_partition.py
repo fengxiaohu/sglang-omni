@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -178,4 +179,15 @@ def pytest_collection_modifyitems(
         else:
             deselected_items.append(item)
     config.hook.pytest_deselected(items=deselected_items)
+    if os.environ.get("OMNI_CI_ORDER_CPU_CASES") == "1" and partition is not None:
+        # note (fengxiaohu): Dispatch costly cases early while the other workers can still consume the short tail.
+        durations = read_durations(config)
+        counts = Counter(item.path for item in selected_items)
+        seconds_per_case = {
+            path: durations.get(path.relative_to(config.rootpath).as_posix(), 1.0) / count
+            for path, count in counts.items()
+        }
+        selected_items.sort(key=lambda item: -seconds_per_case[item.path])
+    else:
+        pass
     items[:] = selected_items

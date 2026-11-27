@@ -16,6 +16,7 @@ jobs:
     env:
       CUDA_VISIBLE_DEVICES: ""
       OMNI_CI_PRELOAD_SESSION_WORKERS: "1"
+      OMNI_CI_ORDER_CPU_CASES: "1"
       UV_TORCH_BACKEND: cpu
       OMP_NUM_THREADS: "1"
       OPENBLAS_NUM_THREADS: "1"
@@ -44,7 +45,7 @@ jobs:
               samples.append(perf_counter() - start)
           print("Python compile seconds", samples, median(samples))
           with open(os.environ["GITHUB_ENV"], "a") as environment:
-              print(f"CPU_PYTEST_WORKERS={3 if median(samples) >= 0.047 else 2}", file=environment)
+              print(f"CPU_PYTEST_WORKERS={4 if median(samples) >= 0.058 else 3 if median(samples) >= 0.047 else 2}", file=environment)
           PY
 
       - uses: astral-sh/setup-uv@v6
@@ -115,7 +116,7 @@ jobs:
           source .venv/bin/activate
           export PYTHONPATH="$PWD"
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ --basetemp="$(mktemp -d /tmp/pt.XXXXXX)" -n "$CPU_PYTEST_WORKERS" --dist=worksteal -v -m "not benchmark and not accelerator" -x \
+            pytest tests/ --basetemp="$(mktemp -d /tmp/pt.XXXXXX)" -n "$CPU_PYTEST_WORKERS" --dist=load --maxschedchunk=4 -v -m "not benchmark and not accelerator" -x \
             -p scripts.ci.utils.pytest_partition --auto-partition-id "$PARTITION" \
             --partition-prefilter all --auto-partition-size "$PARTITIONS" --partition-model-file .github/unit_test_durations.json \
             --junitxml="$RUNNER_TEMP/unit-test.xml"
