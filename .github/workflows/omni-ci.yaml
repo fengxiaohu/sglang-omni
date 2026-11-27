@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        round: [8]
+        round: [9]
         partition: [0, 1, 2, 3, 4, 5, 6, 7]
     env:
       CUDA_VISIBLE_DEVICES: ""
@@ -112,7 +112,7 @@ jobs:
           source .venv/bin/activate
           export PYTHONPATH="$PWD"
           bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ -n 2 --dist=loadfile -v -m "not benchmark and not accelerator" -x \
+            pytest tests/ --basetemp="$(mktemp -d /tmp/pt.XXXXXX)" -n 2 --dist=loadfile -v -m "not benchmark and not accelerator" -x \
             -p scripts.ci.utils.pytest_partition --auto-partition-id "$PARTITION" \
             --partition-prefilter all --auto-partition-size "$PARTITIONS" --partition-model-file .github/unit_test_durations.json \
             --junitxml="$RUNNER_TEMP/unit-test.xml"
