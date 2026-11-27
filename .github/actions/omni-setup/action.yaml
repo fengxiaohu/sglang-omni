@@ -65,6 +65,9 @@ runs:
       env:
         VENV_NAME: ${{ inputs.venv-name }}
       run: |
+        if bash .github/scripts/validate_omni_env_complete.sh --fast "${VENV_NAME}"; then
+          exit 0
+        fi
         if bash .github/scripts/validate_omni_env_reusable.sh "${VENV_NAME}"; then
           echo "Prepared ${VENV_NAME} environment is reusable under ${OMNI_CI_HOME}."
           exit 0
@@ -72,12 +75,6 @@ runs:
 
         echo "::warning::Prepared ${VENV_NAME} environment is missing or drifted under ${OMNI_CI_HOME}; rebuilding."
         bash .github/scripts/reconcile_omni_ci_env.sh "${VENV_NAME}"
-
-    - name: Assert OMNI environment passes reuse gate
-      shell: bash
-      env:
-        VENV_NAME: ${{ inputs.venv-name }}
-      run: bash .github/scripts/validate_omni_env_reusable.sh "${VENV_NAME}"
 
     - name: Export Rust router paths
       shell: bash

@@ -3,6 +3,11 @@
 # job of the same PR rebuilt it while this one waited for the lock.
 set -euo pipefail
 
+lock_held=false
+if [[ ${1:-} == --lock-held ]]; then
+  lock_held=true
+  shift
+fi
 if [ "$#" -ne 1 ]; then
   echo "usage: $0 <venv-name>" >&2
   exit 1
@@ -22,20 +27,13 @@ DEPS_HASH_FILE="${OMNI_CI_HOME}/.deps-hash"
 source "${SCRIPT_DIR}/omni_ci_deps_hash.sh"
 DEPS_HASH="$(omni_ci_deps_hash)"
 
-LOCK_DIR="${UV_CACHE_DIR:-/data/omni-ci/uv-cache}"
-mkdir -p "${LOCK_DIR}"
-LOCK_FILE="${LOCK_DIR}/omni-venv-prepare-$(echo -n "${OMNI_CI_HOME}" | sha256sum | awk '{print $1}').lock"
-
-exec 200>"${LOCK_FILE}"
-if ! flock -w 3600 200; then
-  echo "Timed out waiting for venv prepare lock: ${LOCK_FILE}" >&2
-  exit 1
-fi
-
 # Jobs of one PR share OMNI_CI_HOME and can run at the same time. When another
 # job rebuilt it while this one waited for the lock, rebuilding again would
 # delete the venv that job is already testing with.
-if bash "${SCRIPT_DIR}/validate_omni_env_reusable.sh" "${VENV_NAME}" > /dev/null 2>&1; then
+if ! "$lock_held"; then
+  source "${SCRIPT_DIR}/lock_omni_ci_venv.sh"
+fi
+if ! "$lock_held" && bash "${SCRIPT_DIR}/validate_omni_env_reusable.sh" "${VENV_NAME}" > /dev/null 2>&1; then
   echo "Reusing ${HOST}: another job prepared it while this one waited for the lock"
   rm -rf "./${VENV_NAME}"
   ln -sfn "${HOST}" "./${VENV_NAME}"
@@ -75,14 +73,7 @@ uv pip install --no-deps -e .
 
 bash "${SCRIPT_DIR}/install_ci_cosyvoice.sh" "${HOST}"
 
-if ! bash "${SCRIPT_DIR}/validate_omni_venv_imports.sh" "${VENV_NAME}"; then
-  exit 1
-fi
-
-if ! bash "${SCRIPT_DIR}/verify_omni_installed_pins.sh" "${VENV_NAME}"; then
-  echo "::error::Fresh venv does not match pyproject.toml pins" >&2
-  exit 1
-fi
+bash "${SCRIPT_DIR}/validate_omni_env_reusable.sh" "${VENV_NAME}"
 
 echo "${DEPS_HASH}" > "${DEPS_HASH_FILE}"
 echo "Fresh environment ready at ${HOST} (deps_hash=${DEPS_HASH})"

@@ -159,6 +159,8 @@ jobs:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
+        --stop-timeout=2
+        -v /etc/machine-id:/run/omni-ci-host-id:ro
         -e NVIDIA_VISIBLE_DEVICES
         -e OMNI_CI_CPUSET
         -v /dev/shm:/dev/shm
@@ -168,19 +170,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Assess CI environment completeness
-        id: env_state
-        shell: bash
-        run: |
-          echo "OMNI_CI_HOME=${OMNI_CI_HOME}"
-          if bash .github/scripts/validate_omni_env_reusable.sh omni; then
-            echo "action=reuse" >> "${GITHUB_OUTPUT}"
-            echo "Existing environment passes reuse gate; will refresh editable install."
-          else
-            echo "action=rebuild" >> "${GITHUB_OUTPUT}"
-            echo "Environment missing or drifted; will reconcile or rebuild."
-          fi
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -192,10 +181,6 @@ jobs:
         run: |
           binary="$(bash .github/scripts/prepare_rust_router.sh build)"
           echo "SGLANG_OMNI_ROUTER_BIN=${binary}" >> "${GITHUB_ENV}"
-
-      - uses: ./.github/actions/omni-save-cache
-        with:
-          venv-name: omni
 
       - name: Ensure CI model weights
         shell: bash
@@ -249,11 +234,11 @@ jobs:
 
       - name: Mark PR environment complete
         shell: bash
-        run: bash .github/scripts/mark_omni_env_complete.sh omni
+        run: bash .github/scripts/mark_omni_env_complete.sh --skip-reusable-check omni
 
       - name: Verify setup completion marker
         shell: bash
-        run: bash .github/scripts/validate_omni_env_complete.sh omni
+        run: bash .github/scripts/validate_omni_env_complete.sh --fast omni
 
   asr-ci:
     name: ASR CI
@@ -370,52 +355,81 @@ jobs:
         with:
           enable-cache: false
 
+      - name: Compute CPU dependency fingerprint
+        id: deps
+        run: |
+          source .github/scripts/omni_ci_deps_hash.sh
+          deps_hash=$(omni_ci_deps_hash)
+          echo "deps_hash=$deps_hash" >> "$GITHUB_OUTPUT"
+          echo "python_minor=3.12" >> "$GITHUB_OUTPUT"
+          echo "cache_version=v1" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: venv_cache
+        with:
+          path: .venv
+          key: omni-cpu-venv-${{ steps.deps.outputs.cache_version }}-${{ runner.os }}-${{ runner.arch }}-py312-${{ steps.deps.outputs.deps_hash }}
+
       - name: Install CPU test dependencies
         timeout-minutes: 10
         run: |
-          # note (0xtoward): rank Ubuntu mirrors with priority:N so apt uses the fastest healthy mirror without load-balancing onto degraded regional EC2 mirrors.
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            default_mirror=$(awk 'NF {print $1; exit}' /etc/apt/apt-mirrors.txt)
-            best_mirror=""
-            best_speed=0
-            candidates=()
-            while IFS= read -r m; do
-              if [ -n "$m" ]; then
-                candidates+=("$m")
+          missing_packages=()
+          for package in ffmpeg sox; do
+            command -v "$package" >/dev/null || missing_packages+=("$package")
+          done
+          if (( ${#missing_packages[@]} )); then
+            # note (0xtoward): rank Ubuntu mirrors with priority:N so apt uses the fastest healthy mirror without load-balancing onto degraded regional EC2 mirrors.
+            if [ -f /etc/apt/apt-mirrors.txt ]; then
+              default_mirror=$(awk 'NF {print $1; exit}' /etc/apt/apt-mirrors.txt)
+              best_mirror=""
+              best_speed=0
+              candidates=()
+              while IFS= read -r m; do
+                if [ -n "$m" ]; then
+                  candidates+=("$m")
+                fi
+              done < <(
+                printf '%s\n' \
+                  "$default_mirror" \
+                  http://azure.archive.ubuntu.com/ubuntu/ \
+                  http://archive.ubuntu.com/ubuntu/ \
+                  | awk 'NF {sub(/\/+$/, ""); print $0 "/"}' \
+                  | awk '!seen[$0]++'
+              )
+              for mirror in "${candidates[@]}"; do
+                speed=$(curl -4 -fsS --max-time 3 -o /dev/null -w '%{speed_download}' "${mirror}dists/noble/main/binary-amd64/Packages.xz" 2>/dev/null) || speed=0
+                speed_int=${speed%%.*}
+                speed_int=${speed_int:-0}
+                echo "Ubuntu mirror probe: ${mirror} -> ${speed_int} B/s"
+                if [ "$speed_int" -gt "$best_speed" ]; then
+                  best_speed=$speed_int
+                  best_mirror=$mirror
+                fi
+                if [ "$speed_int" -ge 5000000 ]; then
+                  break
+                fi
+              done
+              if [ -n "$best_mirror" ]; then
+                printf '%s\n' "$best_mirror" "${candidates[@]}" \
+                  | awk 'NF && !seen[$0]++ {printf "%s\tpriority:%d\n", $0, ++n}' \
+                  | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+                echo "Using Ubuntu apt mirror: ${best_mirror} (${best_speed} B/s)"
               fi
-            done < <(
-              printf '%s\n' \
-                "$default_mirror" \
-                http://azure.archive.ubuntu.com/ubuntu/ \
-                http://archive.ubuntu.com/ubuntu/ \
-                | awk 'NF {sub(/\/+$/, ""); print $0 "/"}' \
-                | awk '!seen[$0]++'
-            )
-            for mirror in "${candidates[@]}"; do
-              speed=$(curl -4 -fsS --max-time 3 -o /dev/null -w '%{speed_download}' "${mirror}dists/noble/main/binary-amd64/Packages.xz" 2>/dev/null) || speed=0
-              speed_int=${speed%%.*}
-              speed_int=${speed_int:-0}
-              echo "Ubuntu mirror probe: ${mirror} -> ${speed_int} B/s"
-              if [ "$speed_int" -gt "$best_speed" ]; then
-                best_speed=$speed_int
-                best_mirror=$mirror
-              fi
-              if [ "$speed_int" -ge 5000000 ]; then
-                break
-              fi
-            done
-            if [ -n "$best_mirror" ]; then
-              printf '%s\n' "$best_mirror" "${candidates[@]}" \
-                | awk 'NF && !seen[$0]++ {printf "%s\tpriority:%d\n", $0, ++n}' \
-                | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-              echo "Using Ubuntu apt mirror: ${best_mirror} (${best_speed} B/s)"
             fi
+            sudo apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get \
+              -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 \
+              install -y --no-install-recommends "${missing_packages[@]}"
           fi
-          sudo apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get \
-            -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 \
-            install -y --no-install-recommends ffmpeg sox
-          uv venv --python 3.12
+          if [[ "${{ steps.venv_cache.outputs.cache-hit }}" == true ]]; then
+            if .venv/bin/python -c "import torch, pytest, cosyvoice, matcha" &&
+               uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e .; then
+              exit 0
+            fi
+            echo "::warning::Cached CPU environment failed validation; rebuilding"
+            rm -rf .venv
+          fi
+          uv venv --python /usr/bin/python${{ steps.deps.outputs.python_minor }}
           python3 -c 'import tomllib; print("\n".join(tomllib.load(open("pyproject.toml", "rb"))["tool"]["uv"]["override-dependencies"]))' > "$RUNNER_TEMP/omni-overrides.txt"
           uv pip install --overrides "$RUNNER_TEMP/omni-overrides.txt" --find-links https://abetlen.github.io/llama-cpp-python/whl/cpu/llama-cpp-python/ \
             -e '.[audar-tts,fishaudio,fun-cosyvoice3,minicpm-o]'
@@ -473,6 +487,8 @@ jobs:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
+        --stop-timeout=2
+        -v /etc/machine-id:/run/omni-ci-host-id:ro
         -e NVIDIA_VISIBLE_DEVICES
         -e OMNI_CI_CPUSET
         -v /dev/shm:/dev/shm
