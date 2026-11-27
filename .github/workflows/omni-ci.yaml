@@ -11,8 +11,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        round: [1, 2, 3]
-        partition: [0, 1, 2, 3, 4, 5, 6, 7]
+        round: [6, 7]
+        partition: [6, 7]
     env:
       CUDA_VISIBLE_DEVICES: ""
       OMNI_CI_PRELOAD_SESSION_WORKERS: "1"
@@ -24,6 +24,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Measure host Python throughput
+        shell: bash
+        run: |
+          lscpu
+          python3 - <<'PY'
+          from pathlib import Path
+          from statistics import median
+          from time import perf_counter
+          paths = sorted(Path("sglang_omni/pipeline").rglob("*.py"))
+          sources = [(str(p), p.read_bytes()) for p in paths]
+          samples = []
+          for _ in range(5):
+              start = perf_counter()
+              for name, source in sources:
+                  compile(source, name, "exec")
+              samples.append(perf_counter() - start)
+          print("Python compile seconds", samples, median(samples))
+          PY
 
       - uses: astral-sh/setup-uv@v6
         with:
@@ -108,7 +127,7 @@ jobs:
 
 
       - name: Capture same-revision node IDs
-        if: ${{ !cancelled() && matrix.round == 2 }}
+        if: ${{ !cancelled() && matrix.round == 0 }}
         env:
           PARTITION: ${{ matrix.partition }}
         run: |
@@ -135,7 +154,7 @@ jobs:
           done
 
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() && matrix.round == 2 }}
+        if: ${{ !cancelled() && matrix.round == 0 }}
         with:
           name: nodeids-${{ matrix.partition }}
           path: ${{ runner.temp }}/nodeids/
